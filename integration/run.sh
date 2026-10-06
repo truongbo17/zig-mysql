@@ -7,11 +7,13 @@ container80="$prefix-80"
 container84="$prefix-84"
 container97="$prefix-97"
 binary="$(mktemp -t zig-mysql-socket-test.XXXXXX)"
+socket_dir=/tmp/zig-mysql-test-socket
 ca_file=/tmp/zig-mysql-test-ca.pem
 cleanup() {
   docker rm -f "$container80" "$container84" "$container97" >/dev/null 2>&1 || true
   rm -f "$binary"
   rm -f "$ca_file"
+  rmdir "$socket_dir" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -36,6 +38,8 @@ docker exec -e MYSQL_PWD=zig_mysql_test "$container80" mysql -uroot -e \
 zig build integration
 
 if [[ "$(uname -s)" == Linux ]]; then
+  mkdir -p "$socket_dir"
+  chmod 777 "$socket_dir"
   zig test --test-no-exec -femit-bin="$binary" \
     --dep zig_mysql -Mroot=integration/inside_socket.zig -lssl -lcrypto -lc -Mzig_mysql=src/root.zig
   chmod 755 "$binary"
@@ -47,15 +51,16 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
   name="$prefix-$suffix"
   port_args=()
   if [[ "$suffix" == 84 ]]; then port_args=(-p 127.0.0.1:33307:3306); fi
+  socket_args=()
+  if [[ "$(uname -s)" == Linux ]]; then socket_args=(-v "$socket_dir:/var/run/mysqld"); fi
   docker run --name "$name" -e MYSQL_ROOT_PASSWORD=zig_mysql_test \
-    -e MYSQL_DATABASE=zigtest "${port_args[@]}" -d "$image" >/dev/null
+    -e MYSQL_DATABASE=zigtest "${port_args[@]}" "${socket_args[@]}" -d "$image" >/dev/null
   wait_mysql "$name"
   if [[ "$suffix" == 84 ]]; then
     docker cp "$name":/var/lib/mysql/ca.pem "$ca_file"
     zig build tls-integration
   fi
   if [[ "$(uname -s)" == Linux ]]; then
-    docker cp "$binary" "$name":/tmp/zig-mysql-socket-test
-    docker exec "$name" /tmp/zig-mysql-socket-test
+    "$binary"
   fi
 done

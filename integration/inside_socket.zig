@@ -6,7 +6,7 @@ test "MySQL 8.4 or 9.x caching SHA2 over Unix socket" {
     defer threaded.deinit();
     const io = threaded.io();
     var client = try mysql.Client.connect(std.testing.allocator, io, .{
-        .address = .{ .unix = try std.Io.net.UnixAddress.init("/var/run/mysqld/mysqld.sock") },
+        .address = .{ .unix = try std.Io.net.UnixAddress.init("/tmp/zig-mysql-test-socket/mysqld.sock") },
         .username = "root",
         .password = "zig_mysql_test",
         .database = "zigtest",
