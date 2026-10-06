@@ -46,4 +46,15 @@ test "MySQL 8.0 text query and result rows" {
     try std.testing.expectEqual(@as(usize, 1), bound_select.value.rows.items.len);
     try std.testing.expectEqualStrings("3", bound_select.value.rows.items[0].values[0].?);
     try std.testing.expectEqualStrings("prepared", bound_select.value.rows.items[0].values[1].?);
+
+    try client.begin(io);
+    var transient = try client.execute(io, insert_stmt, &.{ .{ .int = 4 }, .{ .text = "rollback" } });
+    transient.deinit();
+    try client.rollback(io);
+    var count = try client.query(io, "SELECT COUNT(*) FROM sample WHERE id = 4");
+    defer count.deinit();
+    try std.testing.expectEqualStrings("0", count.value.rows.items[0].values[0].?);
+
+    try std.testing.expectError(error.ServerError, client.query(io, "SELECT * FROM table_that_does_not_exist"));
+    try std.testing.expectEqual(@as(u16, 1146), client.last_server_error.?.code);
 }

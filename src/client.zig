@@ -135,6 +135,18 @@ pub const Client = struct {
         if (packet[0] != 0x00) return error.Malformed;
     }
 
+    pub fn begin(self: *Client, io: std.Io) !void {
+        try self.runControlStatement(io, "START TRANSACTION");
+    }
+
+    pub fn commit(self: *Client, io: std.Io) !void {
+        try self.runControlStatement(io, "COMMIT");
+    }
+
+    pub fn rollback(self: *Client, io: std.Io) !void {
+        try self.runControlStatement(io, "ROLLBACK");
+    }
+
     pub fn query(self: *Client, io: std.Io, sql: []const u8) !Result {
         try self.command(io, 0x03, sql);
         return self.readResult(io, false);
@@ -295,6 +307,12 @@ pub const Client = struct {
         try self.wire.write(io, payload);
     }
 
+    fn runControlStatement(self: *Client, io: std.Io, sql: []const u8) !void {
+        var result = try self.query(io, sql);
+        defer result.deinit();
+        if (result.value != .ok) return error.UnexpectedResult;
+    }
+
     fn finishAuthentication(self: *Client, io: std.Io, password: []const u8, initial_plugin: []const u8, initial_seed: []const u8, secure_local: bool) !void {
         var plugin = initial_plugin;
         var seed = initial_seed;
@@ -343,14 +361,15 @@ pub const Client = struct {
     }
 
     fn serverFailure(self: *Client, packet: []const u8) anyerror {
-        if (self.last_server_error) |e| self.allocator.free(e.message);
         var state: [5]u8 = "HY000".*;
         if (packet.len >= 9 and packet[3] == '#') @memcpy(&state, packet[4..9]);
         const start: usize = if (packet.len >= 9 and packet[3] == '#') 9 else 3;
+        const message = self.allocator.dupe(u8, if (packet.len >= start) packet[start..] else "") catch return error.OutOfMemory;
+        if (self.last_server_error) |e| self.allocator.free(e.message);
         self.last_server_error = .{
             .code = if (packet.len >= 3) @as(u16, packet[1]) | @as(u16, packet[2]) << 8 else 0,
             .sql_state = state,
-            .message = self.allocator.dupe(u8, if (packet.len >= start) packet[start..] else "") catch return error.OutOfMemory,
+            .message = message,
         };
         return error.ServerError;
     }
