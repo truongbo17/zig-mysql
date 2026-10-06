@@ -49,12 +49,10 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
   read -r suffix image <<< "$entry"
   if [[ "$(uname -s)" != Linux && "$suffix" == 97 ]]; then continue; fi
   name="$prefix-$suffix"
-  port_args=()
-  if [[ "$suffix" == 84 ]]; then port_args=(-p 127.0.0.1:33307:3306); fi
-  socket_args=()
-  if [[ "$(uname -s)" == Linux ]]; then socket_args=(-v "$socket_dir:/var/run/mysqld"); fi
-  docker run --name "$name" -e MYSQL_ROOT_PASSWORD=zig_mysql_test \
-    -e MYSQL_DATABASE=zigtest "${port_args[@]}" "${socket_args[@]}" -d "$image" >/dev/null
+  docker_args=(-e MYSQL_ROOT_PASSWORD=zig_mysql_test -e MYSQL_DATABASE=zigtest)
+  if [[ "$suffix" == 84 ]]; then docker_args+=(-p 127.0.0.1:33307:3306); fi
+  if [[ "$(uname -s)" == Linux ]]; then docker_args+=(-v "$socket_dir:/var/run/mysqld"); fi
+  docker run --name "$name" "${docker_args[@]}" -d "$image" >/dev/null
   wait_mysql "$name"
   if [[ "$suffix" == 84 ]]; then
     docker cp "$name":/var/lib/mysql/ca.pem "$ca_file"
