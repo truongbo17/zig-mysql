@@ -63,4 +63,5 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
   if [[ "$(uname -s)" == Linux ]]; then
     "$binary"
   fi
+  docker rm -f "$name" >/dev/null
 done
