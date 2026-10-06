@@ -4,7 +4,7 @@ A native Zig client for the MySQL classic client/server protocol. The project is
 
 ## About
 
-`zig-mysql` aims to offer a small, explicit API for connecting to MySQL, executing parameterized statements, and reading results without a MySQL C client library. The protocol implementation is native Zig; verified TLS uses OpenSSL 3 because Zig 0.16/0.17's TLS client cannot process the optional client-certificate request in MySQL's default TLS handshake. This is a new implementation, informed by the [MySQL protocol documentation](https://dev.mysql.com/doc/dev/mysql-server/latest/PAGE_PROTOCOL.html), the API and test practices of [Go's MySQL driver](https://github.com/go-sql-driver/mysql), and lessons from [MyZQL](https://github.com/speed2exe/myzql). Code is not copied from either driver.
+`zig-mysql` is a Zig client library for the MySQL classic protocol. It supports TCP and Unix socket connections, authentication, verified TLS, text queries, prepared statements with typed parameters, transactions, and buffered or streaming results. The wire protocol is implemented in Zig without the MySQL C client library; TLS uses OpenSSL 3. The compatibility table below lists the versions tested against real servers.
 
 ## Version Compatibility
 
