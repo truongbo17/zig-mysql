@@ -86,10 +86,65 @@ pub const Result = struct {
     }
 };
 
+/// Text rows arrive one packet at a time. A row's values remain valid until
+/// the next call to `next` or `deinit`. Always call `deinit` to drain leftovers.
+pub const RowStream = struct {
+    client: *Client,
+    columns: []const Column,
+    metadata_arena: std.heap.ArenaAllocator,
+    row_arena: std.heap.ArenaAllocator,
+    done: bool = false,
+
+    pub fn next(self: *RowStream, io: std.Io) !?Row {
+        if (self.done) return null;
+        self.row_arena.deinit();
+        self.row_arena = std.heap.ArenaAllocator.init(self.client.allocator);
+        const packet = self.client.wire.read(io) catch |err| {
+            self.client.broken = true;
+            return err;
+        };
+        defer self.client.allocator.free(packet);
+        if (packet.len > 0 and packet[0] == 0xff) {
+            self.done = true;
+            self.client.active_stream = false;
+            return self.client.serverFailure(packet);
+        }
+        if (isEof(packet)) {
+            self.done = true;
+            self.client.active_stream = false;
+            return null;
+        }
+        errdefer self.client.broken = true;
+        var c = protocol.Cursor{ .bytes = packet };
+        const a = self.row_arena.allocator();
+        const values = try a.alloc(?[]const u8, self.columns.len);
+        for (values) |*value| {
+            const bytes = try c.lenString();
+            value.* = if (bytes) |b| try a.dupe(u8, b) else null;
+        }
+        if (c.pos != packet.len) return error.Malformed;
+        return .{ .values = values };
+    }
+
+    pub fn deinit(self: *RowStream, io: std.Io) void {
+        while (!self.done) {
+            _ = self.next(io) catch {
+                self.client.broken = true;
+                break;
+            };
+        }
+        self.client.active_stream = false;
+        self.row_arena.deinit();
+        self.metadata_arena.deinit();
+    }
+};
+
 pub const Client = struct {
     allocator: std.mem.Allocator,
     wire: Wire,
     last_server_error: ?ServerError = null,
+    active_stream: bool = false,
+    broken: bool = false,
 
     /// Opens a classic-protocol TCP connection and authenticates.
     /// This first transport supports native auth and cached SHA2 fast auth.
@@ -167,6 +222,38 @@ pub const Client = struct {
         return self.readResult(io, false);
     }
 
+    /// Stream a SELECT result without buffering all rows.
+    pub fn queryRows(self: *Client, io: std.Io, sql: []const u8) !RowStream {
+        try self.command(io, 0x03, sql);
+        const first = try self.wire.read(io);
+        defer self.allocator.free(first);
+        if (first.len == 0) return error.Malformed;
+        if (first[0] == 0xff) return self.serverFailure(first);
+        if (first[0] == 0x00) return error.UnexpectedResult;
+        if (first[0] == 0xfb) return error.LocalInfileDisabled;
+        var c = protocol.Cursor{ .bytes = first };
+        const n64 = (try c.lenInt()) orelse return error.Malformed;
+        if (n64 == 0 or n64 > 4096) return error.Malformed;
+        const n: usize = @intCast(n64);
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer arena.deinit();
+        const columns = try arena.allocator().alloc(Column, n);
+        for (columns) |*column| {
+            const packet = try self.wire.read(io);
+            defer self.allocator.free(packet);
+            if (packet.len > 0 and packet[0] == 0xff) return self.serverFailure(packet);
+            column.* = try parseColumn(arena.allocator(), packet);
+        }
+        try self.expectEof(io);
+        self.active_stream = true;
+        return .{
+            .client = self,
+            .columns = columns,
+            .metadata_arena = arena,
+            .row_arena = std.heap.ArenaAllocator.init(self.allocator),
+        };
+    }
+
     /// Prepare a statement on the server. Close it when no longer needed.
     pub fn prepare(self: *Client, io: std.Io, sql: []const u8) !Statement {
         try self.command(io, 0x16, sql);
@@ -234,6 +321,8 @@ pub const Client = struct {
     /// COM_STMT_CLOSE has no server response.
     pub fn closeStatement(self: *Client, io: std.Io, statement: *Statement) !void {
         if (statement.closed) return;
+        if (self.broken) return error.ConnectionBroken;
+        if (self.active_stream) return error.RowsNotConsumed;
         self.wire.reset();
         var payload: [5]u8 = .{ 0x19, 0, 0, 0, 0 };
         for (0..4) |i| payload[i + 1] = @truncate(statement.id >> @intCast(i * 8));
@@ -314,6 +403,8 @@ pub const Client = struct {
     }
 
     fn command(self: *Client, io: std.Io, code: u8, data: []const u8) !void {
+        if (self.broken) return error.ConnectionBroken;
+        if (self.active_stream) return error.RowsNotConsumed;
         self.wire.reset();
         const payload = try self.allocator.alloc(u8, data.len + 1);
         defer self.allocator.free(payload);

@@ -8,6 +8,7 @@ pub const TlsConfig = @import("client.zig").TlsConfig;
 pub const Result = @import("client.zig").Result;
 pub const Param = @import("client.zig").Param;
 pub const Statement = @import("client.zig").Statement;
+pub const RowStream = @import("client.zig").RowStream;
 
 test {
     _ = protocol;

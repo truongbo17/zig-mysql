@@ -18,7 +18,8 @@ trap cleanup EXIT
 wait_mysql() {
   local name="$1"
   for _ in $(seq 1 90); do
-    if docker exec -e MYSQL_PWD=zig_mysql_test "$name" mysql -uroot -N -e 'SELECT 1' >/dev/null 2>&1; then
+    if docker logs "$name" 2>&1 | rg -q 'MySQL init process done. Ready for start up.' && \
+       docker exec -e MYSQL_PWD=zig_mysql_test "$name" mysql -uroot -N -e 'SELECT 1' >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -35,13 +36,7 @@ docker exec -e MYSQL_PWD=zig_mysql_test "$container80" mysql -uroot -e \
 zig build integration
 
 if [[ "$(uname -s)" == Linux ]]; then
-  arch="$(docker info --format '{{.Architecture}}')"
-  case "$arch" in
-    x86_64|amd64) target=x86_64-linux ;;
-    aarch64|arm64) target=aarch64-linux ;;
-    *) echo "Unsupported Docker architecture: $arch" >&2; exit 1 ;;
-  esac
-  zig test --test-no-exec -target "$target" -femit-bin="$binary" \
+  zig test --test-no-exec -femit-bin="$binary" \
     --dep zig_mysql -Mroot=integration/inside_socket.zig -lssl -lcrypto -lc -Mzig_mysql=src/root.zig
   chmod 755 "$binary"
 fi

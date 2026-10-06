@@ -28,12 +28,13 @@ Compatibility is established by a real server test, rather than inferred from a 
 | `caching_sha2_password` fast and Unix socket full authentication | Implemented |
 | Ping | Implemented |
 | Text `COM_QUERY` including result rows and NULL | Implemented |
+| Streaming text result rows, with drain on close | Implemented |
 | Server error code and SQLSTATE | Implemented |
-| Multi-packet messages | Implemented |
+| Multi-packet messages, including result rows over 16 MB | Implemented |
 | Prepared statements, typed parameter binding, binary result rows | Implemented |
 | Transactions (`begin`, `commit`, `rollback`) | Implemented |
 | Verified TLS with CA and hostname checks, full SHA2 authentication over TLS | Implemented (OpenSSL 3) |
-| Streaming rows, timeouts, pooling | Planned |
+| Timeouts, pooling | Planned |
 
 Unencrypted TCP does **not** send a cleartext password for full SHA2 authentication. Such a server request returns `error.SecureTransportRequired`. `LOCAL INFILE` is disabled. TLS operations currently use blocking OpenSSL I/O.
 
@@ -85,6 +86,8 @@ for (result.value.rows.items) |row| {
 ```
 
 Do not concatenate untrusted input into SQL. Use `prepare` and `execute` with typed parameters for input values.
+
+For large `SELECT` results, use `queryRows` and call `RowStream.deinit(io)` after iteration. Each returned row's byte slices remain valid until the next `next(io)` call. A connection rejects other commands while streaming rows remain unread; `deinit` drains them so the connection can be reused.
 
 ## Protocol references
 

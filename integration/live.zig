@@ -57,4 +57,18 @@ test "MySQL 8.0 text query and result rows" {
 
     try std.testing.expectError(error.ServerError, client.query(io, "SELECT * FROM table_that_does_not_exist"));
     try std.testing.expectEqual(@as(u16, 1146), client.last_server_error.?.code);
+
+    // A row larger than one classic packet must be reassembled correctly.
+    var large = try client.query(io, "SELECT REPEAT('z', 16777216)");
+    defer large.deinit();
+    const text = large.value.rows.items[0].values[0].?;
+    try std.testing.expectEqual(@as(usize, 16777216), text.len);
+    try std.testing.expectEqual(@as(u8, 'z'), text[text.len - 1]);
+
+    var stream = try client.queryRows(io, "SELECT id, label FROM sample ORDER BY id");
+    try std.testing.expectError(error.RowsNotConsumed, client.ping(io));
+    const first_row = (try stream.next(io)).?;
+    try std.testing.expectEqualStrings("1", first_row.values[0].?);
+    stream.deinit(io); // drains the unread rows
+    try client.ping(io);
 }
