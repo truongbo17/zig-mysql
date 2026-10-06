@@ -18,7 +18,7 @@ trap cleanup EXIT
 wait_mysql() {
   local name="$1"
   for _ in $(seq 1 90); do
-    if docker logs "$name" 2>&1 | rg -q 'MySQL init process done. Ready for start up.' && \
+    if docker logs "$name" 2>&1 | grep -q 'MySQL init process done. Ready for start up.' && \
        docker exec -e MYSQL_PWD=zig_mysql_test "$name" mysql -uroot -N -e 'SELECT 1' >/dev/null 2>&1; then
       return 0
     fi
