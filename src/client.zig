@@ -21,6 +21,7 @@ pub const Config = struct {
     password: []const u8,
     database: []const u8 = "",
     max_message_size: usize = 64 * 1024 * 1024,
+    connect_timeout: std.Io.Timeout = .none,
     tls: ?TlsConfig = null,
 };
 
@@ -151,7 +152,7 @@ pub const Client = struct {
     /// Full SHA2 auth over unencrypted TCP is rejected.
     pub fn connect(allocator: std.mem.Allocator, io: std.Io, config: Config) !Client {
         const stream = switch (config.address) {
-            .ip => |address| try address.connect(io, .{ .mode = .stream }),
+            .ip => |address| try address.connect(io, .{ .mode = .stream, .timeout = config.connect_timeout }),
             .unix => |address| try address.connect(io),
         };
         var self = Client{ .allocator = allocator, .wire = .{
@@ -198,7 +199,10 @@ pub const Client = struct {
 
     pub fn ping(self: *Client, io: std.Io) !void {
         try self.command(io, 0x0e, "");
-        const packet = try self.wire.read(io);
+        const packet = self.wire.read(io) catch |err| {
+            self.broken = true;
+            return err;
+        };
         defer self.allocator.free(packet);
         if (packet.len == 0) return error.Malformed;
         if (packet[0] == 0xff) return self.serverFailure(packet);
@@ -225,12 +229,19 @@ pub const Client = struct {
     /// Stream a SELECT result without buffering all rows.
     pub fn queryRows(self: *Client, io: std.Io, sql: []const u8) !RowStream {
         try self.command(io, 0x03, sql);
-        const first = try self.wire.read(io);
+        const first = self.wire.read(io) catch |err| {
+            self.broken = true;
+            return err;
+        };
         defer self.allocator.free(first);
         if (first.len == 0) return error.Malformed;
         if (first[0] == 0xff) return self.serverFailure(first);
         if (first[0] == 0x00) return error.UnexpectedResult;
-        if (first[0] == 0xfb) return error.LocalInfileDisabled;
+        if (first[0] == 0xfb) {
+            self.broken = true;
+            return error.LocalInfileDisabled;
+        }
+        errdefer self.broken = true;
         var c = protocol.Cursor{ .bytes = first };
         const n64 = (try c.lenInt()) orelse return error.Malformed;
         if (n64 == 0 or n64 > 4096) return error.Malformed;
@@ -257,10 +268,14 @@ pub const Client = struct {
     /// Prepare a statement on the server. Close it when no longer needed.
     pub fn prepare(self: *Client, io: std.Io, sql: []const u8) !Statement {
         try self.command(io, 0x16, sql);
-        const packet = try self.wire.read(io);
+        const packet = self.wire.read(io) catch |err| {
+            self.broken = true;
+            return err;
+        };
         defer self.allocator.free(packet);
         if (packet.len == 0) return error.Malformed;
         if (packet[0] == 0xff) return self.serverFailure(packet);
+        errdefer self.broken = true;
         var c = protocol.Cursor{ .bytes = packet };
         if (try c.byte() != 0) return error.Malformed;
         const statement = Statement{
@@ -277,6 +292,8 @@ pub const Client = struct {
 
     /// Execute with positional, typed parameters. Results use the binary row protocol.
     pub fn execute(self: *Client, io: std.Io, statement: Statement, params: []const Param) !Result {
+        if (self.broken) return error.ConnectionBroken;
+        if (self.active_stream) return error.RowsNotConsumed;
         if (statement.closed) return error.StatementClosed;
         if (params.len != statement.parameter_count) return error.ParameterCountMismatch;
         self.wire.reset();
@@ -314,7 +331,10 @@ pub const Client = struct {
                 .boolean => |v| try payload.append(self.allocator, if (v) 1 else 0),
             };
         }
-        try self.wire.write(io, payload.items);
+        self.wire.write(io, payload.items) catch |err| {
+            self.broken = true;
+            return err;
+        };
         return self.readResult(io, true);
     }
 
@@ -326,15 +346,22 @@ pub const Client = struct {
         self.wire.reset();
         var payload: [5]u8 = .{ 0x19, 0, 0, 0, 0 };
         for (0..4) |i| payload[i + 1] = @truncate(statement.id >> @intCast(i * 8));
-        try self.wire.write(io, &payload);
+        self.wire.write(io, &payload) catch |err| {
+            self.broken = true;
+            return err;
+        };
         statement.closed = true;
     }
 
     fn readResult(self: *Client, io: std.Io, binary: bool) !Result {
-        const first = try self.wire.read(io);
+        const first = self.wire.read(io) catch |err| {
+            self.broken = true;
+            return err;
+        };
         defer self.allocator.free(first);
         if (first.len == 0) return error.Malformed;
         if (first[0] == 0xff) return self.serverFailure(first);
+        errdefer self.broken = true;
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         errdefer arena.deinit();
         if (first[0] == 0x00) {
@@ -410,7 +437,10 @@ pub const Client = struct {
         defer self.allocator.free(payload);
         payload[0] = code;
         @memcpy(payload[1..], data);
-        try self.wire.write(io, payload);
+        self.wire.write(io, payload) catch |err| {
+            self.broken = true;
+            return err;
+        };
     }
 
     fn runControlStatement(self: *Client, io: std.Io, sql: []const u8) !void {

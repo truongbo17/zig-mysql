@@ -34,7 +34,8 @@ Compatibility is established by a real server test, rather than inferred from a 
 | Prepared statements, typed parameter binding, binary result rows | Implemented |
 | Transactions (`begin`, `commit`, `rollback`) | Implemented |
 | Verified TLS with CA and hostname checks, full SHA2 authentication over TLS | Implemented (OpenSSL 3) |
-| Timeouts, pooling | Planned |
+| TCP connect timeout | Implemented |
+| Query timeout and connection pooling | Planned |
 
 Unencrypted TCP does **not** send a cleartext password for full SHA2 authentication. Such a server request returns `error.SecureTransportRequired`. `LOCAL INFILE` is disabled. TLS operations currently use blocking OpenSSL I/O.
 
@@ -73,6 +74,7 @@ var client = try mysql.Client.connect(allocator, io, .{
     .username = "app",
     .password = password,
     .database = "app_db",
+    .connect_timeout = .{ .duration = .fromSeconds(5) },
     .tls = .{ .host = "db.example.com", .ca_file = "/path/to/ca.pem" },
 });
 defer client.deinit(io);
