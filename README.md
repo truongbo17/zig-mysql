@@ -31,8 +31,9 @@ Compatibility is established by a real server test, rather than inferred from a 
 | Server error code and SQLSTATE | Implemented |
 | Multi-packet messages | Implemented |
 | Prepared statements, typed parameter binding, binary result rows | Implemented |
+| Transactions (`begin`, `commit`, `rollback`) | Implemented |
 | TLS and full SHA2 authentication over TCP | Planned |
-| Streaming rows, transactions, timeouts, pooling | Planned |
+| Streaming rows, timeouts, pooling | Planned |
 
 Unencrypted TCP does **not** send a cleartext password for full SHA2 authentication. Such a server request returns `error.SecureTransportRequired`. `LOCAL INFILE` is disabled.
 
@@ -41,9 +42,10 @@ Unencrypted TCP does **not** send a cleartext password for full SHA2 authenticat
 ```sh
 zig build test
 zig build integration  # requires the integration MySQL container on 127.0.0.1:33306
+bash integration/run.sh  # disposable MySQL 8.0, 8.4 and 9.7 Docker matrix
 ```
 
-The integration test expects a `zigtest` database and a `zigtest` user with password `zig_mysql_test` using `mysql_native_password`. These credentials are for the disposable test server only.
+`zig build integration` expects a `zigtest` database and a `zigtest` user with password `zig_mysql_test` using `mysql_native_password`. `integration/run.sh` creates these test containers and cleans them up. These credentials are for disposable test servers only.
 
 ## Example
 
