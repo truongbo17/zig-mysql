@@ -8,6 +8,7 @@ const client_connect_with_db: u32 = 1 << 3;
 const client_transactions: u32 = 1 << 13;
 const client_secure_connection: u32 = 1 << 15;
 const client_plugin_auth: u32 = 1 << 19;
+const client_ssl: u32 = 1 << 11;
 
 pub const Address = union(enum) {
     ip: std.Io.net.IpAddress,
@@ -20,6 +21,14 @@ pub const Config = struct {
     password: []const u8,
     database: []const u8 = "",
     max_message_size: usize = 64 * 1024 * 1024,
+    tls: ?TlsConfig = null,
+};
+
+pub const TlsConfig = struct {
+    /// Expected name in the server certificate, independent of the dialed IP.
+    host: []const u8,
+    /// Absolute PEM CA path. Null uses OpenSSL's configured default CA paths.
+    ca_file: ?[]const u8 = null,
 };
 
 pub const ServerError = struct {
@@ -105,25 +114,31 @@ pub const Client = struct {
         if (hello.capabilities & required != required) return error.UnsupportedServer;
 
         const flags = (required | client_transactions |
+            (if (config.tls != null) client_ssl else @as(u32, 0)) |
             (if (config.database.len > 0) client_connect_with_db else @as(u32, 0))) & hello.capabilities;
+        if (config.tls != null and flags & client_ssl == 0) return error.TlsUnsupported;
         var response: std.ArrayList(u8) = .empty;
         defer response.deinit(allocator);
         try appendInt(&response, allocator, flags, 4);
         try appendInt(&response, allocator, @min(config.max_message_size, std.math.maxInt(u32)), 4);
         try response.append(allocator, 45); // utf8mb4_general_ci
         try response.appendNTimes(allocator, 0, 23);
+        if (config.tls) |tls_config| {
+            try self.wire.write(io, response.items); // SSLRequest, sequence 1
+            try self.wire.startTls(io, tls_config.host, tls_config.ca_file);
+        }
         try appendNul(&response, allocator, config.username);
         try appendAuth(&response, allocator, hello.plugin, config.password, &hello.seed);
         if (config.database.len > 0) try appendNul(&response, allocator, config.database);
         try appendNul(&response, allocator, hello.plugin);
         try self.wire.write(io, response.items);
-        try self.finishAuthentication(io, config.password, hello.plugin, &hello.seed, config.address == .unix);
+        try self.finishAuthentication(io, config.password, hello.plugin, &hello.seed, config.address == .unix or config.tls != null);
         return self;
     }
 
     pub fn deinit(self: *Client, io: std.Io) void {
         if (self.last_server_error) |e| self.allocator.free(e.message);
-        self.wire.stream.close(io);
+        self.wire.close(io);
     }
 
     pub fn ping(self: *Client, io: std.Io) !void {

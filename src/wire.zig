@@ -1,15 +1,29 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
+const tls_backend = @import("openssl.zig");
 
 /// One classic-protocol exchange. The sequence resets before each command.
 pub const Wire = struct {
     allocator: std.mem.Allocator,
     stream: std.Io.net.Stream,
+    tls: ?tls_backend.Session = null,
     sequence: u8 = 0,
     max_message_size: usize = 64 * 1024 * 1024,
 
     pub fn reset(self: *Wire) void {
         self.sequence = 0;
+    }
+
+    pub fn close(self: *Wire, io: std.Io) void {
+        if (self.tls) |*session| session.deinit();
+        self.stream.close(io);
+    }
+
+    /// Starts a verified TLS session after the MySQL SSLRequest packet.
+    pub fn startTls(self: *Wire, io: std.Io, host: []const u8, ca_file: ?[]const u8) !void {
+        if (self.tls != null) return error.AlreadyEncrypted;
+        _ = io;
+        self.tls = try tls_backend.Session.init(self.allocator, @intCast(self.stream.socket.handle), host, ca_file);
     }
 
     pub fn read(self: *Wire, io: std.Io) ![]u8 {
@@ -44,6 +58,10 @@ pub const Wire = struct {
     }
 
     fn readExact(self: *Wire, io: std.Io, destination: []u8) !void {
+        if (self.tls) |*session| {
+            try session.readExact(destination);
+            return;
+        }
         var used: usize = 0;
         while (used < destination.len) {
             var buffers: [1][]u8 = .{destination[used..]};
@@ -57,6 +75,10 @@ pub const Wire = struct {
     }
 
     fn writeAll(self: *Wire, io: std.Io, bytes: []const u8) !void {
+        if (self.tls) |*session| {
+            try session.writeAll(bytes);
+            return;
+        }
         var remaining = bytes;
         while (remaining.len > 0) {
             const n = if (comptime @hasField(std.Io.Operation, "net_write")) blk: {
