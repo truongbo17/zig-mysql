@@ -9,8 +9,13 @@ const client_transactions: u32 = 1 << 13;
 const client_secure_connection: u32 = 1 << 15;
 const client_plugin_auth: u32 = 1 << 19;
 
+pub const Address = union(enum) {
+    ip: std.Io.net.IpAddress,
+    unix: std.Io.net.UnixAddress,
+};
+
 pub const Config = struct {
-    address: std.Io.net.IpAddress,
+    address: Address,
     username: []const u8,
     password: []const u8,
     database: []const u8 = "",
@@ -45,6 +50,23 @@ pub const Rows = struct {
     items: []const Row,
 };
 
+pub const Param = union(enum) {
+    null,
+    int: i64,
+    uint: u64,
+    float: f64,
+    text: []const u8,
+    bytes: []const u8,
+    boolean: bool,
+};
+
+pub const Statement = struct {
+    id: u32,
+    parameter_count: u16,
+    column_count: u16,
+    closed: bool = false,
+};
+
 /// The returned result owns all text and row memory. Call deinit after use.
 pub const Result = struct {
     arena: std.heap.ArenaAllocator,
@@ -64,7 +86,10 @@ pub const Client = struct {
     /// This first transport supports native auth and cached SHA2 fast auth.
     /// Full SHA2 auth over unencrypted TCP is rejected.
     pub fn connect(allocator: std.mem.Allocator, io: std.Io, config: Config) !Client {
-        const stream = try config.address.connect(io, .{ .mode = .stream });
+        const stream = switch (config.address) {
+            .ip => |address| try address.connect(io, .{ .mode = .stream }),
+            .unix => |address| try address.connect(io),
+        };
         var self = Client{ .allocator = allocator, .wire = .{
             .allocator = allocator,
             .stream = stream,
@@ -92,7 +117,7 @@ pub const Client = struct {
         if (config.database.len > 0) try appendNul(&response, allocator, config.database);
         try appendNul(&response, allocator, hello.plugin);
         try self.wire.write(io, response.items);
-        try self.finishAuthentication(io, config.password, hello.plugin, &hello.seed);
+        try self.finishAuthentication(io, config.password, hello.plugin, &hello.seed, config.address == .unix);
         return self;
     }
 
@@ -112,6 +137,84 @@ pub const Client = struct {
 
     pub fn query(self: *Client, io: std.Io, sql: []const u8) !Result {
         try self.command(io, 0x03, sql);
+        return self.readResult(io, false);
+    }
+
+    /// Prepare a statement on the server. Close it when no longer needed.
+    pub fn prepare(self: *Client, io: std.Io, sql: []const u8) !Statement {
+        try self.command(io, 0x16, sql);
+        const packet = try self.wire.read(io);
+        defer self.allocator.free(packet);
+        if (packet.len == 0) return error.Malformed;
+        if (packet[0] == 0xff) return self.serverFailure(packet);
+        var c = protocol.Cursor{ .bytes = packet };
+        if (try c.byte() != 0) return error.Malformed;
+        const statement = Statement{
+            .id = @intCast(try c.uint(4)),
+            .column_count = @intCast(try c.uint(2)),
+            .parameter_count = @intCast(try c.uint(2)),
+        };
+        for (0..statement.parameter_count) |_| try self.discardPacket(io);
+        if (statement.parameter_count > 0) try self.expectEof(io);
+        for (0..statement.column_count) |_| try self.discardPacket(io);
+        if (statement.column_count > 0) try self.expectEof(io);
+        return statement;
+    }
+
+    /// Execute with positional, typed parameters. Results use the binary row protocol.
+    pub fn execute(self: *Client, io: std.Io, statement: Statement, params: []const Param) !Result {
+        if (statement.closed) return error.StatementClosed;
+        if (params.len != statement.parameter_count) return error.ParameterCountMismatch;
+        self.wire.reset();
+        var payload: std.ArrayList(u8) = .empty;
+        defer payload.deinit(self.allocator);
+        try payload.append(self.allocator, 0x17);
+        try appendInt(&payload, self.allocator, statement.id, 4);
+        try payload.append(self.allocator, 0); // no server cursor
+        try appendInt(&payload, self.allocator, 1, 4); // iteration count
+        if (params.len > 0) {
+            const bitmap_start = payload.items.len;
+            const bitmap_len = (params.len + 7) / 8;
+            try payload.appendNTimes(self.allocator, 0, bitmap_len);
+            try payload.append(self.allocator, 1); // new parameter types
+            for (params, 0..) |p, i| {
+                if (p == .null) payload.items[bitmap_start + i / 8] |= @as(u8, 1) << @intCast(i % 8);
+                const typ: u8, const flags: u8 = switch (p) {
+                    .null => .{ 6, 0 },
+                    .int => .{ 8, 0 },
+                    .uint => .{ 8, 0x80 },
+                    .float => .{ 5, 0 },
+                    .text => .{ 253, 0 },
+                    .bytes => .{ 252, 0 },
+                    .boolean => .{ 1, 0 },
+                };
+                try payload.append(self.allocator, typ);
+                try payload.append(self.allocator, flags);
+            }
+            for (params) |p| switch (p) {
+                .null => {},
+                .int => |v| try appendInt(&payload, self.allocator, @bitCast(v), 8),
+                .uint => |v| try appendInt(&payload, self.allocator, v, 8),
+                .float => |v| try appendInt(&payload, self.allocator, @bitCast(v), 8),
+                .text, .bytes => |v| try appendLenString(&payload, self.allocator, v),
+                .boolean => |v| try payload.append(self.allocator, if (v) 1 else 0),
+            };
+        }
+        try self.wire.write(io, payload.items);
+        return self.readResult(io, true);
+    }
+
+    /// COM_STMT_CLOSE has no server response.
+    pub fn closeStatement(self: *Client, io: std.Io, statement: *Statement) !void {
+        if (statement.closed) return;
+        self.wire.reset();
+        var payload: [5]u8 = .{ 0x19, 0, 0, 0, 0 };
+        for (0..4) |i| payload[i + 1] = @truncate(statement.id >> @intCast(i * 8));
+        try self.wire.write(io, &payload);
+        statement.closed = true;
+    }
+
+    fn readResult(self: *Client, io: std.Io, binary: bool) !Result {
         const first = try self.wire.read(io);
         defer self.allocator.free(first);
         if (first.len == 0) return error.Malformed;
@@ -145,9 +248,21 @@ pub const Client = struct {
             if (isEof(packet)) break;
             var c = protocol.Cursor{ .bytes = packet };
             const values = try a.alloc(?[]const u8, n);
-            for (values) |*value| {
-                const bytes = try c.lenString();
-                value.* = if (bytes) |b| try a.dupe(u8, b) else null;
+            if (binary) {
+                if (try c.byte() != 0) return error.Malformed;
+                const bitmap = try c.take((n + 9) / 8);
+                for (values, 0..) |*value, i| {
+                    const bit = i + 2;
+                    value.* = if (bitmap[bit / 8] & (@as(u8, 1) << @intCast(bit % 8)) != 0)
+                        null
+                    else
+                        try parseBinaryValue(a, &c, columns[i]);
+                }
+            } else {
+                for (values) |*value| {
+                    const bytes = try c.lenString();
+                    value.* = if (bytes) |b| try a.dupe(u8, b) else null;
+                }
             }
             if (c.pos != packet.len) return error.Malformed;
             try rows.append(a, .{ .values = values });
@@ -156,6 +271,19 @@ pub const Client = struct {
             .columns = columns,
             .items = try rows.toOwnedSlice(a),
         } } };
+    }
+
+    fn discardPacket(self: *Client, io: std.Io) !void {
+        const packet = try self.wire.read(io);
+        defer self.allocator.free(packet);
+        if (packet.len > 0 and packet[0] == 0xff) return self.serverFailure(packet);
+    }
+
+    fn expectEof(self: *Client, io: std.Io) !void {
+        const packet = try self.wire.read(io);
+        defer self.allocator.free(packet);
+        if (packet.len > 0 and packet[0] == 0xff) return self.serverFailure(packet);
+        if (!isEof(packet)) return error.Malformed;
     }
 
     fn command(self: *Client, io: std.Io, code: u8, data: []const u8) !void {
@@ -167,7 +295,7 @@ pub const Client = struct {
         try self.wire.write(io, payload);
     }
 
-    fn finishAuthentication(self: *Client, io: std.Io, password: []const u8, initial_plugin: []const u8, initial_seed: []const u8) !void {
+    fn finishAuthentication(self: *Client, io: std.Io, password: []const u8, initial_plugin: []const u8, initial_seed: []const u8, secure_local: bool) !void {
         var plugin = initial_plugin;
         var seed = initial_seed;
         var plugin_storage: [128]u8 = undefined;
@@ -197,7 +325,14 @@ pub const Client = struct {
                     if (!std.mem.eql(u8, plugin, "caching_sha2_password") or packet.len < 2) return error.UnsupportedAuthentication;
                     switch (packet[1]) {
                         0x03 => {}, // fast auth succeeded; final OK follows
-                        0x04 => return error.SecureTransportRequired,
+                        0x04 => {
+                            if (!secure_local) return error.SecureTransportRequired;
+                            const clear = try self.allocator.alloc(u8, password.len + 1);
+                            defer self.allocator.free(clear);
+                            @memcpy(clear[0..password.len], password);
+                            clear[password.len] = 0;
+                            try self.wire.write(io, clear);
+                        },
                         else => return error.UnsupportedAuthentication,
                     }
                 },
@@ -249,6 +384,23 @@ fn appendInt(out: *std.ArrayList(u8), allocator: std.mem.Allocator, number: u64,
     for (0..count) |i| try out.append(allocator, @truncate(number >> @intCast(i * 8)));
 }
 
+fn appendLenString(out: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8) !void {
+    const n = text.len;
+    if (n < 251) {
+        try out.append(allocator, @intCast(n));
+    } else if (n <= std.math.maxInt(u16)) {
+        try out.append(allocator, 0xfc);
+        try appendInt(out, allocator, n, 2);
+    } else if (n <= 0xff_ff_ff) {
+        try out.append(allocator, 0xfd);
+        try appendInt(out, allocator, n, 3);
+    } else {
+        try out.append(allocator, 0xfe);
+        try appendInt(out, allocator, n, 8);
+    }
+    try out.appendSlice(allocator, text);
+}
+
 fn isEof(packet: []const u8) bool {
     return packet.len > 0 and packet.len < 9 and packet[0] == 0xfe;
 }
@@ -277,6 +429,74 @@ fn parseColumn(allocator: std.mem.Allocator, packet: []const u8) !Column {
     const type_code = try c.byte();
     const flags: u16 = @intCast(try c.uint(2));
     return .{ .name = try allocator.dupe(u8, name), .type_code = type_code, .flags = flags };
+}
+
+fn parseBinaryValue(allocator: std.mem.Allocator, c: *protocol.Cursor, column: Column) ![]const u8 {
+    const unsigned = column.flags & 32 != 0;
+    const width: u4 = switch (column.type_code) {
+        1 => 1, // TINY
+        2, 13 => 2, // SHORT, YEAR
+        3, 9 => 4, // LONG, INT24
+        8 => 8, // LONGLONG
+        else => 0,
+    };
+    if (width != 0) {
+        const raw = try c.uint(width);
+        if (unsigned) return std.fmt.allocPrint(allocator, "{d}", .{raw});
+        const signed: i64 = switch (width) {
+            1 => @as(i8, @bitCast(@as(u8, @truncate(raw)))),
+            2 => @as(i16, @bitCast(@as(u16, @truncate(raw)))),
+            4 => @as(i32, @bitCast(@as(u32, @truncate(raw)))),
+            8 => @bitCast(raw),
+            else => unreachable,
+        };
+        return std.fmt.allocPrint(allocator, "{d}", .{signed});
+    }
+    switch (column.type_code) {
+        4 => {
+            const raw: u32 = @intCast(try c.uint(4));
+            return std.fmt.allocPrint(allocator, "{d}", .{@as(f32, @bitCast(raw))});
+        },
+        5 => {
+            const raw = try c.uint(8);
+            return std.fmt.allocPrint(allocator, "{d}", .{@as(f64, @bitCast(raw))});
+        },
+        7, 10, 12, 14 => {
+            const len = try c.byte();
+            if (len == 0) return allocator.dupe(u8, "0000-00-00");
+            if (len != 4 and len != 7 and len != 11) return error.Malformed;
+            const year = try c.uint(2);
+            const month = try c.byte();
+            const day = try c.byte();
+            if (len == 4) return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2}", .{ year, month, day });
+            const hour = try c.byte();
+            const minute = try c.byte();
+            const second = try c.byte();
+            if (len == 7) return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}", .{ year, month, day, hour, minute, second });
+            const micro = try c.uint(4);
+            return std.fmt.allocPrint(allocator, "{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}.{d:0>6}", .{ year, month, day, hour, minute, second, micro });
+        },
+        11 => {
+            const len = try c.byte();
+            if (len == 0) return allocator.dupe(u8, "00:00:00");
+            if (len != 8 and len != 12) return error.Malformed;
+            const negative = try c.byte() != 0;
+            const days = try c.uint(4);
+            const hours = try c.byte();
+            const minute = try c.byte();
+            const second = try c.byte();
+            const total_hours = days * 24 + hours;
+            const sign: []const u8 = if (negative) "-" else "";
+            if (len == 8) return std.fmt.allocPrint(allocator, "{s}{d:0>2}:{d:0>2}:{d:0>2}", .{ sign, total_hours, minute, second });
+            const micro = try c.uint(4);
+            return std.fmt.allocPrint(allocator, "{s}{d:0>2}:{d:0>2}:{d:0>2}.{d:0>6}", .{ sign, total_hours, minute, second, micro });
+        },
+        0, 15, 16, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255 => {
+            const text = (try c.lenString()) orelse return error.Malformed;
+            return allocator.dupe(u8, text);
+        },
+        else => return error.UnsupportedColumnType,
+    }
 }
 
 test "parse OK packet and column metadata" {

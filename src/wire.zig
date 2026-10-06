@@ -47,20 +47,25 @@ pub const Wire = struct {
         var used: usize = 0;
         while (used < destination.len) {
             var buffers: [1][]u8 = .{destination[used..]};
-            const result = try self.stream.readWithControl(io, &buffers, &.{});
-            if (result.data_len == 0) return error.EndOfStream;
-            used += result.data_len;
+            const n = if (comptime @hasDecl(std.Io.net.Stream, "readWithControl")) blk: {
+                const result = try self.stream.readWithControl(io, &buffers, &.{});
+                break :blk result.data_len;
+            } else try io.vtable.netRead(io.userdata, self.stream.socket.handle, &buffers);
+            if (n == 0) return error.EndOfStream;
+            used += n;
         }
     }
 
     fn writeAll(self: *Wire, io: std.Io, bytes: []const u8) !void {
         var remaining = bytes;
         while (remaining.len > 0) {
-            const result = try io.operate(.{ .net_write = .{
-                .socket_handle = self.stream.socket.handle,
-                .data = &.{remaining},
-            } });
-            const n = try result.net_write;
+            const n = if (comptime @hasField(std.Io.Operation, "net_write")) blk: {
+                const result = try io.operate(.{ .net_write = .{
+                    .socket_handle = self.stream.socket.handle,
+                    .data = &.{remaining},
+                } });
+                break :blk try result.net_write;
+            } else try io.vtable.netWrite(io.userdata, self.stream.socket.handle, &.{}, &.{remaining}, 1);
             if (n == 0) return error.WriteZero;
             remaining = remaining[n..];
         }

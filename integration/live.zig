@@ -6,7 +6,7 @@ test "MySQL 8.0 text query and result rows" {
     defer threaded.deinit();
     const io = threaded.io();
     var client = try mysql.Client.connect(std.testing.allocator, io, .{
-        .address = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306"),
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
         .username = "zigtest",
         .password = "zig_mysql_test",
         .database = "zigtest",
@@ -30,4 +30,20 @@ test "MySQL 8.0 text query and result rows" {
     try std.testing.expectEqual(@as(usize, 2), rows.items.len);
     try std.testing.expectEqualStrings("hello", rows.items[0].values[1].?);
     try std.testing.expectEqual(@as(?[]const u8, null), rows.items[1].values[1]);
+
+    var insert_stmt = try client.prepare(io, "INSERT INTO sample VALUES (?, ?)");
+    defer client.closeStatement(io, &insert_stmt) catch {};
+    try std.testing.expectEqual(@as(u16, 2), insert_stmt.parameter_count);
+    var bound_insert = try client.execute(io, insert_stmt, &.{ .{ .int = 3 }, .{ .text = "prepared" } });
+    defer bound_insert.deinit();
+    try std.testing.expectEqual(@as(u64, 1), bound_insert.value.ok.affected_rows);
+
+    var select_stmt = try client.prepare(io, "SELECT id, label FROM sample WHERE id = ?");
+    defer client.closeStatement(io, &select_stmt) catch {};
+    try std.testing.expectError(error.ParameterCountMismatch, client.execute(io, select_stmt, &.{}));
+    var bound_select = try client.execute(io, select_stmt, &.{.{ .int = 3 }});
+    defer bound_select.deinit();
+    try std.testing.expectEqual(@as(usize, 1), bound_select.value.rows.items.len);
+    try std.testing.expectEqualStrings("3", bound_select.value.rows.items[0].values[0].?);
+    try std.testing.expectEqualStrings("prepared", bound_select.value.rows.items[0].values[1].?);
 }

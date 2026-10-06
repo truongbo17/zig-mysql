@@ -11,10 +11,10 @@ A native Zig client for the MySQL classic client/server protocol. The project is
 | Component | Version | Status |
 | --- | --- | --- |
 | Zig | 0.17.0 | Unit and integration tests pass |
-| Zig | 0.16.0 | Testing in progress |
+| Zig | 0.16.0 | Unit and integration tests pass |
 | MySQL | 8.0.46 | TCP, native authentication, ping, text queries, results tested |
-| MySQL | 8.4 | Planned integration test |
-| MySQL | 9.x | Planned integration test |
+| MySQL | 8.4.11 | Unix socket, full caching SHA2 authentication, ping, prepared SELECT tested |
+| MySQL | 9.7.1 | Unix socket, full caching SHA2 authentication, ping, prepared SELECT tested |
 | MariaDB | 10.11 / 11.x | Planned integration test |
 
 Compatibility is established by a real server test, rather than inferred from a version string. Server capabilities are negotiated during the handshake.
@@ -23,16 +23,15 @@ Compatibility is established by a real server test, rather than inferred from a 
 
 | Feature | Status |
 | --- | --- |
-| TCP and classic protocol handshake | Implemented |
+| TCP, Unix socket and classic protocol handshake | Implemented |
 | `mysql_native_password` | Implemented |
-| `caching_sha2_password` fast authentication | Implemented |
+| `caching_sha2_password` fast and Unix socket full authentication | Implemented |
 | Ping | Implemented |
 | Text `COM_QUERY` including result rows and NULL | Implemented |
 | Server error code and SQLSTATE | Implemented |
 | Multi-packet messages | Implemented |
-| Prepared statements and parameter binding | Planned |
-| TLS and full SHA2 authentication | Planned |
-| Unix socket | Planned |
+| Prepared statements, typed parameter binding, binary result rows | Implemented |
+| TLS and full SHA2 authentication over TCP | Planned |
 | Streaming rows, transactions, timeouts, pooling | Planned |
 
 Unencrypted TCP does **not** send a cleartext password for full SHA2 authentication. Such a server request returns `error.SecureTransportRequired`. `LOCAL INFILE` is disabled.
@@ -53,7 +52,7 @@ var threaded: std.Io.Threaded = .init(allocator, .{});
 defer threaded.deinit();
 const io = threaded.io();
 var client = try mysql.Client.connect(allocator, io, .{
-    .address = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:3306"),
+    .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:3306") },
     .username = "app",
     .password = password,
     .database = "app_db",
@@ -68,7 +67,7 @@ for (result.value.rows.items) |row| {
 }
 ```
 
-Do not concatenate untrusted input into SQL. Parameterized statements are being implemented.
+Do not concatenate untrusted input into SQL. Use `prepare` and `execute` with typed parameters for input values.
 
 ## Protocol references
 
