@@ -40,6 +40,7 @@ case "$arch" in
 esac
 zig test --test-no-exec -target "$target" -femit-bin="$binary" \
   --dep zig_mysql -Mroot=integration/inside_socket.zig -Mzig_mysql=src/root.zig
+chmod 755 "$binary"
 
 for entry in "84 mysql:8.4" "97 mysql:9.7"; do
   read -r suffix image <<< "$entry"
