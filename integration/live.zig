@@ -72,3 +72,61 @@ test "MySQL 8.0 text query and result rows" {
     stream.deinit(io); // drains the unread rows
     try client.ping(io);
 }
+
+test "connection pool caps capacity and resets sessions between borrowers" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var pool = try mysql.Pool.init(std.testing.allocator, .{
+        .connection = .{
+            .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+            .username = "zigtest",
+            .password = "zig_mysql_test",
+            .database = "zigtest",
+        },
+        .max_open = 1,
+        .max_idle = 1,
+    });
+    defer pool.deinit(io);
+
+    const first = try pool.acquire(io);
+    try std.testing.expectError(error.PoolExhausted, pool.tryAcquire(io));
+
+    var set_variable = try first.query(io, "SET @zig_pool_marker = 123");
+    set_variable.deinit();
+    var create_temp = try first.query(io, "CREATE TEMPORARY TABLE zig_pool_temp (id INT)");
+    create_temp.deinit();
+
+    pool.release(io, first);
+    const idle_stats = pool.stats(io);
+    try std.testing.expectEqual(@as(usize, 1), idle_stats.open);
+    try std.testing.expectEqual(@as(usize, 1), idle_stats.idle);
+    try std.testing.expectEqual(@as(usize, 0), idle_stats.in_use);
+
+    const reused = try pool.acquire(io);
+    try std.testing.expect(first == reused);
+    var check_variable = try reused.query(io, "SELECT @zig_pool_marker");
+    try std.testing.expectEqual(@as(?[]const u8, null), check_variable.value.rows.items[0].values[0]);
+    check_variable.deinit();
+
+    // Reset removes temporary tables and preserves the configured schema.
+    try std.testing.expectError(error.ServerError, reused.query(io, "SELECT * FROM zig_pool_temp"));
+    var schema = try reused.query(io, "SELECT DATABASE()");
+    try std.testing.expectEqualStrings("zigtest", schema.value.rows.items[0].values[0].?);
+    schema.deinit();
+
+    // Ordinary SQL errors are recoverable; the connection can still be pooled.
+    pool.release(io, reused);
+    const third = try pool.acquire(io);
+    try third.ping(io);
+
+    // A broken connection is evicted instead of being handed out again.
+    third.broken = true;
+    pool.release(io, third);
+    const after_evict = pool.stats(io);
+    try std.testing.expectEqual(@as(usize, 0), after_evict.open);
+
+    const replacement = try pool.acquire(io);
+    try replacement.ping(io);
+    pool.release(io, replacement);
+}

@@ -199,14 +199,27 @@ pub const Client = struct {
 
     pub fn ping(self: *Client, io: std.Io) !void {
         try self.command(io, 0x0e, "");
-        const packet = self.wire.read(io) catch |err| {
-            self.broken = true;
-            return err;
-        };
-        defer self.allocator.free(packet);
-        if (packet.len == 0) return error.Malformed;
-        if (packet[0] == 0xff) return self.serverFailure(packet);
-        if (packet[0] != 0x00) return error.Malformed;
+        try self.readCommandOk(io);
+    }
+
+    /// Changes the default schema for subsequent statements (COM_INIT_DB).
+    pub fn selectDatabase(self: *Client, io: std.Io, database: []const u8) !void {
+        try self.command(io, 0x02, database);
+        try self.readCommandOk(io);
+    }
+
+    /// Restores a clean MySQL session without opening another TCP connection.
+    /// Rolls back open transactions, drops temporary tables and user variables,
+    /// and invalidates all server-side prepared statements. Do not reuse a
+    /// Statement created before this call. Any active RowStream must be drained
+    /// before the reset.
+    pub fn resetConnection(self: *Client, io: std.Io) !void {
+        try self.command(io, 0x1f, "");
+        try self.readCommandOk(io);
+        if (self.last_server_error) |e| {
+            self.allocator.free(e.message);
+            self.last_server_error = null;
+        }
     }
 
     pub fn begin(self: *Client, io: std.Io) !void {
@@ -438,6 +451,21 @@ pub const Client = struct {
         payload[0] = code;
         @memcpy(payload[1..], data);
         self.wire.write(io, payload) catch |err| {
+            self.broken = true;
+            return err;
+        };
+    }
+
+    /// An unexpected or truncated response means the protocol is no longer
+    /// synchronized; the connection cannot safely be reused by a pool.
+    fn readCommandOk(self: *Client, io: std.Io) !void {
+        const packet = self.wire.read(io) catch |err| {
+            self.broken = true;
+            return err;
+        };
+        defer self.allocator.free(packet);
+        if (packet.len > 0 and packet[0] == 0xff) return self.serverFailure(packet);
+        _ = parseOk(packet) catch |err| {
             self.broken = true;
             return err;
         };

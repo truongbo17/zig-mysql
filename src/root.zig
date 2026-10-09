@@ -9,10 +9,14 @@ pub const Result = @import("client.zig").Result;
 pub const Param = @import("client.zig").Param;
 pub const Statement = @import("client.zig").Statement;
 pub const RowStream = @import("client.zig").RowStream;
+pub const Pool = @import("pool.zig").Pool;
+pub const PoolConfig = @import("pool.zig").PoolConfig;
+pub const PoolStats = @import("pool.zig").Stats;
 
 test {
     _ = protocol;
     _ = auth;
     _ = wire;
     _ = @import("client.zig");
+    _ = @import("pool.zig");
 }

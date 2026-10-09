@@ -4,7 +4,7 @@ A native Zig client for the MySQL classic client/server protocol. The project is
 
 ## About
 
-`zig-mysql` is a Zig client library for the MySQL classic protocol. It supports TCP and Unix socket connections, authentication, verified TLS, text queries, prepared statements with typed parameters, transactions, and buffered or streaming results. The wire protocol is implemented in Zig without the MySQL C client library; TLS uses OpenSSL 3. The compatibility table below lists the versions tested against real servers.
+`zig-mysql` is a Zig client library for the MySQL classic protocol. It supports TCP and Unix socket connections, authentication, verified TLS, text queries, prepared statements with typed parameters, transactions, a bounded connection pool, and buffered or streaming results. The wire protocol is implemented in Zig without the MySQL C client library; TLS uses OpenSSL 3. The compatibility table below lists the versions tested against real servers.
 
 ## Version Compatibility
 
@@ -33,9 +33,11 @@ Compatibility is established by a real server test, rather than inferred from a 
 | Multi-packet messages, including result rows over 16 MB | Implemented |
 | Prepared statements, typed parameter binding, binary result rows | Implemented |
 | Transactions (`begin`, `commit`, `rollback`) | Implemented |
+| Session reset (`COM_RESET_CONNECTION`) and schema selection | Implemented |
+| Bounded connection pool with waiting, session reset and broken-connection eviction | Implemented |
 | Verified TLS with CA and hostname checks, full SHA2 authentication over TLS | Implemented (OpenSSL 3) |
 | TCP connect timeout | Implemented |
-| Query timeout and connection pooling | Planned |
+| Query timeout and idle connection health checking | Planned |
 
 Unencrypted TCP does **not** send a cleartext password for full SHA2 authentication. Such a server request returns `error.SecureTransportRequired`. `LOCAL INFILE` is disabled. TLS operations currently use blocking OpenSSL I/O.
 
@@ -90,6 +92,44 @@ for (result.value.rows.items) |row| {
 Do not concatenate untrusted input into SQL. Use `prepare` and `execute` with typed parameters for input values.
 
 For large `SELECT` results, use `queryRows` and call `RowStream.deinit(io)` after iteration. Each returned row's byte slices remain valid until the next `next(io)` call. A connection rejects other commands while streaming rows remain unread; `deinit` drains them so the connection can be reused.
+
+## Connection pooling
+
+`Pool` limits the number of live MySQL connections and waits when all connections
+are checked out. Use `tryAcquire` to return `error.PoolExhausted` instead of
+waiting. Every borrowed connection must be released exactly once.
+
+```zig
+var pool = try mysql.Pool.init(allocator, .{
+    .connection = .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:3306") },
+        .username = "app",
+        .password = password,
+        .database = "app_db",
+    },
+    .max_open = 10,
+    .max_idle = 5,
+});
+defer pool.deinit(io);
+
+const connection = try pool.acquire(io);
+defer pool.release(io, connection);
+var result = try connection.query(io, "SELECT 1");
+defer result.deinit();
+```
+
+A released connection is reset using MySQL `COM_RESET_CONNECTION`, which rolls
+back transactions, drops temporary tables, clears session variables and closes
+prepared statements. The original database is selected again. Do not use
+prepared statements, streams or a connection after returning it to the pool.
+An active stream or broken connection is discarded instead of reused.
+
+`Pool.deinit` requires all borrowers to have returned their connections and
+must not race with `acquire` / `release`. The configuration's string slices
+(including credentials and TLS settings) must outlive the pool. Provide a
+thread-safe allocator for concurrent access. An idle connection disconnected
+by the server may fail on first use; on-borrow health checks and query timeouts
+are not implemented yet.
 
 ## Protocol references
 
