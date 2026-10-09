@@ -302,6 +302,17 @@ pub const Client = struct {
         }
     }
 
+    /// Protects pool session cleanup from a server that accepts
+    /// COM_RESET_CONNECTION but never replies. Timed-out sessions are broken.
+    pub fn resetConnectionWithTimeout(self: *Client, io: std.Io, timeout: std.Io.Duration) !void {
+        return self.withTimeout(void, io, timeout, Client.resetConnection, .{ self, io });
+    }
+
+    /// Bounds restoring the caller's configured database on session reset.
+    pub fn selectDatabaseWithTimeout(self: *Client, io: std.Io, database: []const u8, timeout: std.Io.Duration) !void {
+        return self.withTimeout(void, io, timeout, Client.selectDatabase, .{ self, io, database });
+    }
+
     /// A deadline for the entire PING exchange, not just one socket read.
     /// Timed commands require cancelable std.Io socket operations; the TLS
     /// backend uses nonblocking OpenSSL sockets and cancellable Io waits.
