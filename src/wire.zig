@@ -22,8 +22,7 @@ pub const Wire = struct {
     /// Starts a verified TLS session after the MySQL SSLRequest packet.
     pub fn startTls(self: *Wire, io: std.Io, host: []const u8, ca_file: ?[]const u8) !void {
         if (self.tls != null) return error.AlreadyEncrypted;
-        _ = io;
-        self.tls = try tls_backend.Session.init(self.allocator, @intCast(self.stream.socket.handle), host, ca_file);
+        self.tls = try tls_backend.Session.init(self.allocator, io, @intCast(self.stream.socket.handle), host, ca_file);
     }
 
     pub fn read(self: *Wire, io: std.Io) ![]u8 {
@@ -70,7 +69,7 @@ pub const Wire = struct {
 
     fn readExact(self: *Wire, io: std.Io, destination: []u8) !void {
         if (self.tls) |*session| {
-            try session.readExact(destination);
+            try session.readExact(io, destination);
             return;
         }
         var used: usize = 0;
@@ -87,7 +86,7 @@ pub const Wire = struct {
 
     fn writeAll(self: *Wire, io: std.Io, bytes: []const u8) !void {
         if (self.tls) |*session| {
-            try session.writeAll(bytes);
+            try session.writeAll(io, bytes);
             return;
         }
         var remaining = bytes;
