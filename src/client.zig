@@ -129,11 +129,10 @@ pub const RowStream = struct {
     }
 
     /// Applies a timeout to one row fetch. The timeout resets for each call,
-    /// not for the whole result set. Only cancelable TCP/Unix transports work.
+    /// not for the whole result set. Nonblocking TLS is also supported.
     /// On timeout the connection is poisoned: caller must deinit the stream
     /// (which skips draining) then discard the connection.
     pub fn nextWithTimeout(self: *RowStream, io: std.Io, timeout: std.Io.Duration) !?Row {
-        if (self.client.wire.tls != null) return error.TimedTlsUnsupported;
         if (self.client.broken) return error.ConnectionBroken;
         if (self.done) return null;
         const Outcome = union(enum) {
@@ -195,6 +194,38 @@ pub const Client = struct {
     // Populated by Pool only. Standalone clients do not track pool lifecycle.
     pool_created_at: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
     pool_released_at: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
+
+    /// Bounds TCP connect, MySQL greeting, nonblocking TLS handshake, and
+    /// authentication as one cancelable operation. The loser is joined and
+    /// any late successful socket is closed instead of leaking its fd.
+    pub fn connectWithTimeout(allocator: std.mem.Allocator, io: std.Io, config: Config, timeout: std.Io.Duration) !Client {
+        const Outcome = union(enum) {
+            connected: anyerror!Client,
+            timer: anyerror!void,
+        };
+        var slots: [2]Outcome = undefined;
+        var select: std.Io.Select(Outcome) = .init(io, &slots);
+        defer {
+            while (select.cancel()) |remaining| switch (remaining) {
+                .connected => |response| {
+                    if (response) |value| {
+                        var stale = value;
+                        stale.deinit(io);
+                    } else |_| {}
+                },
+                .timer => {},
+            };
+        }
+        try select.concurrent(.connected, Client.connect, .{ allocator, io, config });
+        try select.concurrent(.timer, std.Io.sleep, .{ io, timeout, .awake });
+        switch (try select.await()) {
+            .connected => |response| return try response,
+            .timer => |elapsed| {
+                try elapsed;
+                return error.ConnectTimeout;
+            },
+        }
+    }
 
     /// Opens a classic-protocol TCP connection and authenticates.
     /// This first transport supports native auth and cached SHA2 fast auth.
@@ -272,8 +303,8 @@ pub const Client = struct {
     }
 
     /// A deadline for the entire PING exchange, not just one socket read.
-    /// Timed commands require cancelable std.Io socket operations; the current
-    /// blocking OpenSSL transport is not supported.
+    /// Timed commands require cancelable std.Io socket operations; the TLS
+    /// backend uses nonblocking OpenSSL sockets and cancellable Io waits.
     pub fn pingWithTimeout(self: *Client, io: std.Io, timeout: std.Io.Duration) !void {
         return self.withTimeout(void, io, timeout, Client.ping, .{ self, io });
     }
@@ -295,7 +326,6 @@ pub const Client = struct {
     /// task before returning is essential: otherwise that task could continue
     /// reading from a socket after the pool has handed it to another caller.
     fn withTimeout(self: *Client, comptime T: type, io: std.Io, timeout: std.Io.Duration, comptime work: anytype, args: anytype) !T {
-        if (self.wire.tls != null) return error.TimedTlsUnsupported;
         if (self.broken) return error.ConnectionBroken;
         const Outcome = union(enum) {
             operation: anyerror!T,
