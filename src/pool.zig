@@ -108,7 +108,7 @@ pub const Pool = struct {
                         connection.pingWithTimeout(io, duration)
                     else
                         connection.ping(io);
-                    checked catch {
+                    checked catch |err| {
                         // Never hand out a socket that might have timed out or
                         // been closed while sitting idle. Make room for retry.
                         connection.deinit(io);
@@ -117,6 +117,12 @@ pub const Pool = struct {
                         self.health_check_failures += 1;
                         self.open -= 1;
                         self.available.signal(io);
+                        // Propagate cancellation instead of attempting another
+                        // network connection from a timed-out acquire task.
+                        if (err == error.Canceled) {
+                            self.mutex.unlock(io);
+                            return error.Canceled;
+                        }
                         // Lock stays held to retry or create a replacement.
                         continue;
                     };
