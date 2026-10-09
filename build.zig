@@ -47,6 +47,17 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Benchmark pooled MySQL queries on localhost:33306");
     bench_step.dependOn(&run_bench.step);
 
+    const stress_module = b.createModule(.{
+        .root_source_file = b.path("integration/stress.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    stress_module.addImport("zig_mysql", module);
+    const stress_tests = b.addTest(.{ .root_module = stress_module });
+    const run_stress = b.addRunArtifact(stress_tests);
+    const stress_step = b.step("stress-integration", "Run concurrent MySQL pool stress and killed-socket recovery tests");
+    stress_step.dependOn(&run_stress.step);
+
     const mariadb_module = b.createModule(.{
         .root_source_file = b.path("integration/mariadb.zig"),
         .target = target,
