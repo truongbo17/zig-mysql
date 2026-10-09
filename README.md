@@ -15,7 +15,7 @@ A native Zig client for the MySQL classic client/server protocol. The project is
 | MySQL | 8.0.46 | TCP, native authentication, ping, text queries, results tested |
 | MySQL | 8.4.11 | Unix socket and verified TLS, full caching SHA2 authentication, ping, prepared SELECT tested |
 | MySQL | 9.7.1 | Unix socket, full caching SHA2 authentication, ping, prepared SELECT tested |
-| MariaDB | 10.11 / 11.4 | Live CI integration added; consult latest CI results |
+| MariaDB | 10.11 / 11.4 | TCP authentication, prepared SQL, transactions and pool reset integration tested |
 
 Compatibility is established by a real server test, rather than inferred from a version string. Server capabilities are negotiated during the handshake.
 
@@ -29,14 +29,14 @@ Compatibility is established by a real server test, rather than inferred from a 
 | Ping | Implemented |
 | Text `COM_QUERY` including result rows and NULL | Implemented |
 | Streaming text result rows, with drain on close | Implemented |
-| Streaming metadata and per-row timeouts (non-TLS) | Implemented; live CI validation required |
+| Streaming metadata and per-row timeouts (non-TLS) | Implemented; live MySQL integration coverage |
 | Server error code and SQLSTATE | Implemented |
 | Multi-packet messages, including result rows over 16 MB | Implemented |
 | Prepared statements, typed parameter binding, binary result rows | Implemented |
 | Transactions (`begin`, `commit`, `rollback`) | Implemented |
 | Session reset (`COM_RESET_CONNECTION`) and schema selection | Implemented |
 | Bounded connection pool with waiting, session reset and broken-connection eviction | Implemented |
-| Lazy idle expiry and max connection lifetime recycling | Implemented; live CI validation required |
+| Lazy idle expiry and max connection lifetime recycling | Implemented; live MySQL integration coverage |
 | Idle health validation, optional PING deadline and reconnect on stale socket | Implemented |
 | Buffered query and prepared execution deadlines (non-TLS TCP/Unix) | Implemented |
 | Verified TLS with CA and hostname checks, full SHA2 authentication over TLS | Implemented (OpenSSL 3) |
