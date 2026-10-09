@@ -4,7 +4,7 @@ const mysql = @import("zig_mysql");
 /// Run against the disposable MySQL 8.0 server on 127.0.0.1:33306.
 /// Each operation includes acquire, COM_PING when reusing an idle connection,
 /// SELECT 1, COM_RESET_CONNECTION, and COM_INIT_DB on release.
-const operations_per_worker: usize = 50;
+const operations_per_worker: usize = 200;
 const worker_counts = [_]usize{ 1, 8, 32 };
 const pool_cap: usize = 16;
 
