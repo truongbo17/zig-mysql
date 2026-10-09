@@ -19,8 +19,21 @@ pub fn build(b: *std.Build) void {
     }
     const tests = b.addTest(.{ .root_module = module });
     const run_tests = b.addRunArtifact(tests);
+    run_tests.has_side_effects = true; // Re-run tests against each live server / soak iteration.
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
+
+    const timeout_module = b.createModule(.{
+        .root_source_file = b.path("integration/timeout_local.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    timeout_module.addImport("zig_mysql", module);
+    const timeout_tests = b.addTest(.{ .root_module = timeout_module });
+    const run_timeout = b.addRunArtifact(timeout_tests);
+    run_timeout.has_side_effects = true; // Re-run tests against each live server / soak iteration.
+    const timeout_step = b.step("timeout-integration", "Verify TCP and TLS stalls expire safely");
+    timeout_step.dependOn(&run_timeout.step);
 
     const live_module = b.createModule(.{
         .root_source_file = b.path("integration/live.zig"),
@@ -30,6 +43,7 @@ pub fn build(b: *std.Build) void {
     live_module.addImport("zig_mysql", module);
     const live_tests = b.addTest(.{ .root_module = live_module });
     const run_live = b.addRunArtifact(live_tests);
+    run_live.has_side_effects = true; // Re-run tests against each live server / soak iteration.
     const integration_step = b.step("integration", "Run tests against local MySQL on port 33306");
     integration_step.dependOn(&run_live.step);
 
@@ -44,6 +58,7 @@ pub fn build(b: *std.Build) void {
         .root_module = bench_module,
     });
     const run_bench = b.addRunArtifact(bench_exe);
+    run_bench.has_side_effects = true; // Re-run tests against each live server / soak iteration.
     const bench_step = b.step("bench", "Benchmark pooled MySQL queries on localhost:33306");
     bench_step.dependOn(&run_bench.step);
 
@@ -55,6 +70,7 @@ pub fn build(b: *std.Build) void {
     stress_module.addImport("zig_mysql", module);
     const stress_tests = b.addTest(.{ .root_module = stress_module });
     const run_stress = b.addRunArtifact(stress_tests);
+    run_stress.has_side_effects = true; // Re-run tests against each live server / soak iteration.
     const stress_step = b.step("stress-integration", "Run concurrent MySQL pool stress and killed-socket recovery tests");
     stress_step.dependOn(&run_stress.step);
 
@@ -66,6 +82,7 @@ pub fn build(b: *std.Build) void {
     mariadb_module.addImport("zig_mysql", module);
     const mariadb_tests = b.addTest(.{ .root_module = mariadb_module });
     const run_mariadb = b.addRunArtifact(mariadb_tests);
+    run_mariadb.has_side_effects = true; // Re-run tests against each live server / soak iteration.
     const mariadb_step = b.step("mariadb-integration", "Run live MariaDB integration against localhost:33308");
     mariadb_step.dependOn(&run_mariadb.step);
 
@@ -77,6 +94,7 @@ pub fn build(b: *std.Build) void {
     tls_module.addImport("zig_mysql", module);
     const tls_tests = b.addTest(.{ .root_module = tls_module });
     const run_tls = b.addRunArtifact(tls_tests);
+    run_tls.has_side_effects = true; // Re-run tests against each live server / soak iteration.
     const tls_step = b.step("tls-integration", "Run verified TLS test against local MySQL on port 33307");
     tls_step.dependOn(&run_tls.step);
 }
