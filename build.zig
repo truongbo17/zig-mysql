@@ -33,6 +33,20 @@ pub fn build(b: *std.Build) void {
     const integration_step = b.step("integration", "Run tests against local MySQL on port 33306");
     integration_step.dependOn(&run_live.step);
 
+    const bench_module = b.createModule(.{
+        .root_source_file = b.path("bench/pool.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    bench_module.addImport("zig_mysql", module);
+    const bench_exe = b.addExecutable(.{
+        .name = "zig-mysql-pool-bench",
+        .root_module = bench_module,
+    });
+    const run_bench = b.addRunArtifact(bench_exe);
+    const bench_step = b.step("bench", "Benchmark pooled MySQL queries on localhost:33306");
+    bench_step.dependOn(&run_bench.step);
+
     const tls_module = b.createModule(.{
         .root_source_file = b.path("integration/tls_local.zig"),
         .target = target,
