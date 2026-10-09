@@ -97,6 +97,7 @@ pub const RowStream = struct {
     done: bool = false,
 
     pub fn next(self: *RowStream, io: std.Io) !?Row {
+        if (self.client.broken) return error.ConnectionBroken;
         if (self.done) return null;
         self.row_arena.deinit();
         self.row_arena = std.heap.ArenaAllocator.init(self.client.allocator);
@@ -127,8 +128,53 @@ pub const RowStream = struct {
         return .{ .values = values };
     }
 
+    /// Applies a timeout to one row fetch. The timeout resets for each call,
+    /// not for the whole result set. Only cancelable TCP/Unix transports work.
+    /// On timeout the connection is poisoned: caller must deinit the stream
+    /// (which skips draining) then discard the connection.
+    pub fn nextWithTimeout(self: *RowStream, io: std.Io, timeout: std.Io.Duration) !?Row {
+        if (self.client.wire.tls != null) return error.TimedTlsUnsupported;
+        if (self.client.broken) return error.ConnectionBroken;
+        if (self.done) return null;
+        const Outcome = union(enum) {
+            row: anyerror!?Row,
+            timer: anyerror!void,
+        };
+        var slots: [2]Outcome = undefined;
+        var select: std.Io.Select(Outcome) = .init(io, &slots);
+        defer {
+            // Do not free row_arena until after the losing read is joined.
+            while (select.cancel()) |_| {}
+        }
+        try select.concurrent(.row, RowStream.next, .{ self, io });
+        select.concurrent(.timer, std.Io.sleep, .{ io, timeout, .awake }) catch |err| {
+            self.client.broken = true;
+            return err;
+        };
+        switch (try select.await()) {
+            .row => |response| return try response,
+            .timer => |elapsed| {
+                self.client.broken = true;
+                try elapsed;
+                return error.QueryTimeout;
+            },
+        }
+    }
+
+    /// Immediately discard row arenas and forbid reuse of the socket.
+    /// Unlike deinit this never reads from the network.
+    pub fn abandon(self: *RowStream) void {
+        self.client.broken = true;
+        self.client.active_stream = false;
+        self.done = true;
+        self.row_arena.deinit();
+        self.metadata_arena.deinit();
+    }
+
     pub fn deinit(self: *RowStream, io: std.Io) void {
-        while (!self.done) {
+        // A timeout/cancellation leaves protocol framing unknown. Never
+        // attempt to drain from an already broken connection.
+        while (!self.done and !self.client.broken) {
             _ = self.next(io) catch {
                 self.client.broken = true;
                 break;
@@ -264,6 +310,11 @@ pub const Client = struct {
                             var result = value;
                             result.deinit();
                         } else |_| {}
+                    } else if (T == RowStream) {
+                        if (response) |value| {
+                            var stream = value;
+                            stream.abandon();
+                        } else |_| {}
                     }
                 },
                 .timer => {},
@@ -341,6 +392,12 @@ pub const Client = struct {
             .metadata_arena = arena,
             .row_arena = std.heap.ArenaAllocator.init(self.allocator),
         };
+    }
+
+    /// Timeout applies to the initial COM_QUERY and column metadata phase;
+    /// call RowStream.nextWithTimeout separately to time each row fetch.
+    pub fn queryRowsWithTimeout(self: *Client, io: std.Io, sql: []const u8, timeout: std.Io.Duration) !RowStream {
+        return self.withTimeout(RowStream, io, timeout, Client.queryRows, .{ self, io, sql });
     }
 
     /// Prepare a statement on the server. Close it when no longer needed.
