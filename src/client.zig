@@ -97,6 +97,7 @@ pub const RowStream = struct {
     done: bool = false,
 
     pub fn next(self: *RowStream, io: std.Io) !?Row {
+        if (self.client.broken) return error.ConnectionBroken;
         if (self.done) return null;
         self.row_arena.deinit();
         self.row_arena = std.heap.ArenaAllocator.init(self.client.allocator);
@@ -127,8 +128,53 @@ pub const RowStream = struct {
         return .{ .values = values };
     }
 
+    /// Applies a timeout to one row fetch. The timeout resets for each call,
+    /// not for the whole result set. Only cancelable TCP/Unix transports work.
+    /// On timeout the connection is poisoned: caller must deinit the stream
+    /// (which skips draining) then discard the connection.
+    pub fn nextWithTimeout(self: *RowStream, io: std.Io, timeout: std.Io.Duration) !?Row {
+        if (self.client.wire.tls != null) return error.TimedTlsUnsupported;
+        if (self.client.broken) return error.ConnectionBroken;
+        if (self.done) return null;
+        const Outcome = union(enum) {
+            row: anyerror!?Row,
+            timer: anyerror!void,
+        };
+        var slots: [2]Outcome = undefined;
+        var select: std.Io.Select(Outcome) = .init(io, &slots);
+        defer {
+            // Do not free row_arena until after the losing read is joined.
+            while (select.cancel()) |_| {}
+        }
+        try select.concurrent(.row, RowStream.next, .{ self, io });
+        select.concurrent(.timer, std.Io.sleep, .{ io, timeout, .awake }) catch |err| {
+            self.client.broken = true;
+            return err;
+        };
+        switch (try select.await()) {
+            .row => |response| return try response,
+            .timer => |elapsed| {
+                self.client.broken = true;
+                try elapsed;
+                return error.QueryTimeout;
+            },
+        }
+    }
+
+    /// Immediately discard row arenas and forbid reuse of the socket.
+    /// Unlike deinit this never reads from the network.
+    pub fn abandon(self: *RowStream) void {
+        self.client.broken = true;
+        self.client.active_stream = false;
+        self.done = true;
+        self.row_arena.deinit();
+        self.metadata_arena.deinit();
+    }
+
     pub fn deinit(self: *RowStream, io: std.Io) void {
-        while (!self.done) {
+        // A timeout/cancellation leaves protocol framing unknown. Never
+        // attempt to drain from an already broken connection.
+        while (!self.done and !self.client.broken) {
             _ = self.next(io) catch {
                 self.client.broken = true;
                 break;
@@ -146,6 +192,9 @@ pub const Client = struct {
     last_server_error: ?ServerError = null,
     active_stream: bool = false,
     broken: bool = false,
+    // Populated by Pool only. Standalone clients do not track pool lifecycle.
+    pool_created_at: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
+    pool_released_at: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
 
     /// Opens a classic-protocol TCP connection and authenticates.
     /// This first transport supports native auth and cached SHA2 fast auth.
@@ -264,6 +313,11 @@ pub const Client = struct {
                             var result = value;
                             result.deinit();
                         } else |_| {}
+                    } else if (T == RowStream) {
+                        if (response) |value| {
+                            var stream = value;
+                            stream.abandon();
+                        } else |_| {}
                     }
                 },
                 .timer => {},
@@ -312,9 +366,15 @@ pub const Client = struct {
             return err;
         };
         defer self.allocator.free(first);
-        if (first.len == 0) return error.Malformed;
+        if (first.len == 0) {
+            self.broken = true;
+            return error.Malformed;
+        }
         if (first[0] == 0xff) return self.serverFailure(first);
-        if (first[0] == 0x00) return error.UnexpectedResult;
+        if (first[0] == 0x00) {
+            self.broken = true;
+            return error.UnexpectedResult;
+        }
         if (first[0] == 0xfb) {
             self.broken = true;
             return error.LocalInfileDisabled;
@@ -343,6 +403,12 @@ pub const Client = struct {
         };
     }
 
+    /// Timeout applies to the initial COM_QUERY and column metadata phase;
+    /// call RowStream.nextWithTimeout separately to time each row fetch.
+    pub fn queryRowsWithTimeout(self: *Client, io: std.Io, sql: []const u8, timeout: std.Io.Duration) !RowStream {
+        return self.withTimeout(RowStream, io, timeout, Client.queryRows, .{ self, io, sql });
+    }
+
     /// Prepare a statement on the server. Close it when no longer needed.
     pub fn prepare(self: *Client, io: std.Io, sql: []const u8) !Statement {
         try self.command(io, 0x16, sql);
@@ -351,7 +417,10 @@ pub const Client = struct {
             return err;
         };
         defer self.allocator.free(packet);
-        if (packet.len == 0) return error.Malformed;
+        if (packet.len == 0) {
+            self.broken = true;
+            return error.Malformed;
+        }
         if (packet[0] == 0xff) return self.serverFailure(packet);
         errdefer self.broken = true;
         var c = protocol.Cursor{ .bytes = packet };
@@ -437,7 +506,10 @@ pub const Client = struct {
             return err;
         };
         defer self.allocator.free(first);
-        if (first.len == 0) return error.Malformed;
+        if (first.len == 0) {
+            self.broken = true;
+            return error.Malformed;
+        }
         if (first[0] == 0xff) return self.serverFailure(first);
         errdefer self.broken = true;
         var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -495,16 +567,25 @@ pub const Client = struct {
     }
 
     fn discardPacket(self: *Client, io: std.Io) !void {
-        const packet = try self.wire.read(io);
+        const packet = self.wire.read(io) catch |err| {
+            self.broken = true;
+            return err;
+        };
         defer self.allocator.free(packet);
         if (packet.len > 0 and packet[0] == 0xff) return self.serverFailure(packet);
     }
 
     fn expectEof(self: *Client, io: std.Io) !void {
-        const packet = try self.wire.read(io);
+        const packet = self.wire.read(io) catch |err| {
+            self.broken = true;
+            return err;
+        };
         defer self.allocator.free(packet);
         if (packet.len > 0 and packet[0] == 0xff) return self.serverFailure(packet);
-        if (!isEof(packet)) return error.Malformed;
+        if (!isEof(packet)) {
+            self.broken = true;
+            return error.Malformed;
+        }
     }
 
     fn command(self: *Client, io: std.Io, code: u8, data: []const u8) !void {

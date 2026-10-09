@@ -14,6 +14,12 @@ pub const PoolConfig = struct {
     /// Optional bound for idle PINGs. Requires plain TCP/Unix transport;
     /// blocking OpenSSL I/O cannot be cancelled by std.Io.Select.
     health_check_timeout: ?std.Io.Duration = null,
+    /// Close idle sockets older than this monotonic duration on next checkout.
+    /// No background scavenger thread is started.
+    max_idle_time: ?std.Io.Duration = null,
+    /// Recycle connections older than this at release or next checkout.
+    /// Active queries are never forcibly interrupted by this setting.
+    max_connection_age: ?std.Io.Duration = null,
 };
 
 pub const Stats = struct {
@@ -22,6 +28,7 @@ pub const Stats = struct {
     /// Includes connections being established, reset or closed during release.
     in_use: usize,
     health_check_failures: usize,
+    expired_connections: usize,
 };
 
 /// A bounded, concurrency-safe pool. Every acquired Client must be released
@@ -38,6 +45,7 @@ pub const Pool = struct {
     idle: std.ArrayList(*client.Client) = .empty,
     open: usize = 0,
     health_check_failures: usize = 0,
+    expired_connections: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, config: PoolConfig) !Pool {
         if (config.max_open == 0 or config.max_idle > config.max_open)
@@ -103,6 +111,15 @@ pub const Pool = struct {
                 const connection = self.idle.items[last];
                 self.idle.items.len = last;
                 self.mutex.unlock(io);
+                if (self.isExpired(io, connection, true)) {
+                    connection.deinit(io);
+                    self.allocator.destroy(connection);
+                    self.mutex.lockUncancelable(io);
+                    self.expired_connections += 1;
+                    self.open -= 1;
+                    self.available.signal(io);
+                    continue;
+                }
                 if (self.config.validate_on_acquire) {
                     const checked = if (self.config.health_check_timeout) |duration|
                         connection.pingWithTimeout(io, duration)
@@ -144,6 +161,7 @@ pub const Pool = struct {
                     self.releaseSlot(io);
                     return err;
                 };
+                connection.pool_created_at = std.Io.Clock.awake.now(io);
                 return connection;
             }
             if (!wait) {
@@ -163,7 +181,8 @@ pub const Pool = struct {
     /// Broken connections and connections with unread RowStreams are closed.
     /// This operation may perform network I/O.
     pub fn release(self: *Pool, io: std.Io, connection: *client.Client) void {
-        var reusable = !connection.broken and !connection.active_stream;
+        const expired = self.isExpired(io, connection, false);
+        var reusable = !connection.broken and !connection.active_stream and !expired;
         if (reusable and self.config.max_idle > 0) {
             connection.resetConnection(io) catch {
                 reusable = false;
@@ -180,8 +199,10 @@ pub const Pool = struct {
         }
 
         self.mutex.lockUncancelable(io);
+        if (expired) self.expired_connections += 1;
         var retained = false;
         if (reusable and self.idle.items.len < self.config.max_idle) {
+            connection.pool_released_at = std.Io.Clock.awake.now(io);
             retained = blk: {
                 self.idle.append(self.allocator, connection) catch break :blk false;
                 break :blk true;
@@ -203,6 +224,24 @@ pub const Pool = struct {
         self.releaseSlot(io);
     }
 
+    fn isExpired(self: *Pool, io: std.Io, connection: *client.Client, idle_checkout: bool) bool {
+        if (self.config.max_connection_age) |age| {
+            if (connection.pool_created_at) |created| {
+                if (created.untilNow(io, .awake).toNanoseconds() >= age.toNanoseconds())
+                    return true;
+            }
+        }
+        if (idle_checkout) {
+            if (self.config.max_idle_time) |duration| {
+                if (connection.pool_released_at) |released| {
+                    if (released.untilNow(io, .awake).toNanoseconds() >= duration.toNanoseconds())
+                        return true;
+                }
+            }
+        }
+        return false;
+    }
+
     fn releaseSlot(self: *Pool, io: std.Io) void {
         self.mutex.lockUncancelable(io);
         std.debug.assert(self.open > 0);
@@ -219,6 +258,7 @@ pub const Pool = struct {
             .idle = self.idle.items.len,
             .in_use = self.open - self.idle.items.len,
             .health_check_failures = self.health_check_failures,
+            .expired_connections = self.expired_connections,
         };
     }
 
