@@ -38,7 +38,11 @@ docker exec -e MYSQL_PWD=zig_mysql_test "$container80" mysql -uroot -e \
 zig build integration
 # Run the reproducible pool benchmark while MySQL 8.0 is available. GitHub
 # runner measurements are diagnostic only; do not use as fixed performance SLAs.
-zig build -Doptimize=ReleaseFast bench
+if [[ "$(uname -s)" == Linux ]]; then
+  timeout 90s zig build -Doptimize=ReleaseFast bench
+else
+  zig build -Doptimize=ReleaseFast bench
+fi
 
 if [[ "$(uname -s)" == Linux ]]; then
   mkdir -p "$socket_dir"
