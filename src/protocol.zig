@@ -12,7 +12,8 @@ pub const Cursor = struct {
     pos: usize = 0,
 
     pub fn take(self: *Cursor, n: usize) Error![]const u8 {
-        if (n > self.bytes.len - self.pos) return error.Truncated;
+        // Reject corrupted cursor state rather than underflowing subtraction.
+        if (self.pos > self.bytes.len or n > self.bytes.len - self.pos) return error.Truncated;
         const out = self.bytes[self.pos..][0..n];
         self.pos += n;
         return out;
@@ -31,6 +32,7 @@ pub const Cursor = struct {
     }
 
     pub fn nulString(self: *Cursor) Error![]const u8 {
+        if (self.pos > self.bytes.len) return error.Truncated;
         const end = std.mem.indexOfScalarPos(u8, self.bytes, self.pos, 0) orelse return error.Truncated;
         const out = self.bytes[self.pos..end];
         self.pos = end + 1;
@@ -134,4 +136,14 @@ test "cursor rejects malformed lengths" {
     try std.testing.expectError(error.Malformed, c.lenInt());
     var d = Cursor{ .bytes = &.{ 4, 'a' } };
     try std.testing.expectError(error.Truncated, d.lenString());
+}
+
+test "cursor corrupted offset and truncated length-encoded payload" {
+    var invalid = Cursor{ .bytes = &.{ 1, 2, 3 }, .pos = 4 };
+    try std.testing.expectError(error.Truncated, invalid.take(1));
+    try std.testing.expectError(error.Truncated, invalid.nulString());
+    var text = Cursor{ .bytes = &.{ 0xfc, 0xff, 0xff, 'x' } };
+    try std.testing.expectError(error.Truncated, text.lenString());
+    var partial = Cursor{ .bytes = &.{ 0xfe, 1, 2, 3 } };
+    try std.testing.expectError(error.Truncated, partial.lenInt());
 }
