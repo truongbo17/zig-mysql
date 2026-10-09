@@ -17,17 +17,17 @@ This is an engineering acceptance document, **not a production certification**.
 ## Current architecture / supported modes
 
 - Zig 0.16/0.17 native classic-protocol client; MySQL 8.0/8.4/9.x matrix.
-- OpenSSL verified TLS with CA and hostname validation; TLS operations remain **blocking**.
-- Non-TLS TCP/Unix support cancellation-bound `queryWithTimeout`, `executeWithTimeout`, `pingWithTimeout`, `acquireWithTimeout` and streamed row deadlines.
+- OpenSSL verified TLS with CA and hostname validation; transport uses **nonblocking** file descriptors on Linux/macOS. The TLS retry path yields through cancelable Zig Io sleeps on WANT_READ/WRITE. Live tests must pass before accepting this as reliable.
+- TCP/Unix and nonblocking TLS support cancellation-bound `queryWithTimeout`, `executeWithTimeout`, `pingWithTimeout`, `acquireWithTimeout` and streamed row deadlines.
 - Session reset, bounded pool, health-check eviction, idle expiry and connection lifetime recycling.
 - Streams must be closed before a connection is returned. Using a connection or statement after returning it is undefined caller behavior.
 
 ## Open production blockers
 
-1. **Hard TLS I/O deadlines:** blocking OpenSSL read/write/handshake cannot be reliably cancelled via `std.Io.Select`. Application deadlines for TLS need a nonblocking OpenSSL transport integrated with I/O readiness and explicit tests for stalled server, zero-byte progress, and handshake timeouts.
+1. **TLS readiness and portability:** nonblocking OpenSSL now yields via 1 ms `std.Io` sleep during SSL_ERROR_WANT_READ/WRITE; verify successful TLS query deadlines and stalled ServerHello with CI. This is **not** event-loop-native readiness polling, Windows support, or proof against all pathological TLS peers. A full TLS transport security review is still necessary.
 2. **Timeout cancellation vs server execution:** client abandonment **does not guarantee MySQL stopped a statement**. Non-idempotent writes require idempotency keys, transaction design and explicit retry policy.
-3. **Observability and operational signals:** counters beyond pool statistics are needed (timeouts, IO errors, reconnects, queue wait, active transactions), plus alert thresholds and tracing integration.
-4. **Fault matrix breadth:** intermittent packet loss, server failover, TLS disconnect under load, network partitions, >16-MiB prepared results, sustained long-running workload and memory leak tests on representative infrastructure remain incomplete.
+3. **Observability and operational signals:** pool counters now include created/closed sockets, waits, timeout, connect/reset errors and age/health eviction. Missing: per-command I/O metrics, latency histograms, tracing integration, active transactions and actual exporter/alert deployment.
+4. **Fault matrix breadth:** deterministic silent greeting/TLS ServerHello, server restart and repeated connection KILL now have automated smoke suites. Intermittent packet loss, network partition, multi-host failover, TLS disconnect under load, >16-MiB prepared result tests, and a true 24-hour single-process memory/CPU soak remain incomplete.
 5. **Compatibility and security:** verify real workload/charset/SQL modes and authentication against deployed server versions, perform dependency review and run independent security assessment. MariaDB interoperability is tested only for cases in `integration/mariadb.zig`.
 
 ## Suggested production acceptance criteria
@@ -52,3 +52,33 @@ zig build -Doptimize=ReleaseFast bench
 ```
 
 The GitHub runner `SELECT 1` benchmarks are diagnostic and must **not** be treated as CCU or production SLA claims.
+
+## New acceptance evidence to inspect
+
+- **TLS deadline matrix:** `integration/tls_local.zig` checks real verified
+  MySQL 8.4 TLS authentication, timed SELECT, SLEEP timeout, streaming and
+  timed pool reuse. `integration/timeout_local.zig` with
+  `integration/stall_server.py` checks deadline against silent MySQL greeting
+  and TLS ServerHello.
+- **Operational signals:** read `pool.stats(io)` for `open`, `idle`,
+  `in_use`, `waits`, `acquire_timeouts`, `connect_failures`,
+  `reset_failures`, `connections_created`, `connections_closed`,
+  `expired_connections`, `health_check_failures`. Export and alert in
+  your application; the library does not ship a metrics exporter.
+- **Repeated faults:** `integration/soak.sh` runs repeated 32-worker
+  stress/fault-injection cycles while an existing MySQL fixture is running.
+  A CI smoke (seconds) is not a 24h soak.
+- **Restart:** `integration/run.sh` restarts its disposable MySQL 8.0
+  container and runs the stress test again.
+
+## Release decision
+
+The test matrix establishes an evidence-backed **staging-ready beta**, not a
+general production guarantee. To promote to production in a business-critical
+service, require evidence from: a 24-hour soak on representative hardware,
+TLS stall/latency/CPU profiling, real outage and failover drills, strict
+connection leak checks, the complete charset/authentication workload matrix,
+and operational metrics with pager thresholds.
+
+Do not manufacture pass claims for criteria that are not yet instrumented,
+run, or independently reviewed.
