@@ -371,3 +371,36 @@ test "pool idle age and connection age recycle at safe boundaries" {
     try replacement.ping(io);
     life_pool.release(io, replacement);
 }
+
+test "streaming row deadline cancels a multi-packet row and evicts its connection" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var pool = try mysql.Pool.init(std.testing.allocator, .{
+        .connection = .{
+            .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+            .username = "zigtest",
+            .password = "zig_mysql_test",
+            .database = "zigtest",
+        },
+        .max_open = 1,
+        .max_idle = 1,
+    });
+    defer pool.deinit(io);
+
+    const connection = try pool.acquire(io);
+    var stream = try connection.queryRows(io, "SELECT REPEAT('x', 16777216)");
+    // A 16-MiB+ row cannot be delivered in one bounded TCP read; an
+    // immediate deadline must stop row reassembly and poison the socket.
+    try std.testing.expectError(error.QueryTimeout, stream.nextWithTimeout(io, .fromMilliseconds(0)));
+    try std.testing.expect(connection.broken);
+    stream.deinit(io); // must not wait for the rest of the oversized row
+    pool.release(io, connection);
+    try std.testing.expectEqual(@as(usize, 0), pool.stats(io).open);
+
+    const fresh = try pool.acquire(io);
+    var healthy = try fresh.query(io, "SELECT 1");
+    try std.testing.expectEqualStrings("1", healthy.value.rows.items[0].values[0].?);
+    healthy.deinit();
+    pool.release(io, fresh);
+}
