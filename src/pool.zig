@@ -11,8 +11,7 @@ pub const PoolConfig = struct {
     /// Adds one network round trip to each idle reuse. Disable only if your
     /// caller is prepared to retry operations when an idle socket has died.
     validate_on_acquire: bool = true,
-    /// Optional bound for idle PINGs. Requires plain TCP/Unix transport;
-    /// blocking OpenSSL I/O cannot be cancelled by std.Io.Select.
+    /// Optional bound for idle PINGs; works with nonblocking TLS as well.
     health_check_timeout: ?std.Io.Duration = null,
     /// Close idle sockets older than this monotonic duration on next checkout.
     /// No background scavenger thread is started.
@@ -50,8 +49,6 @@ pub const Pool = struct {
     pub fn init(allocator: std.mem.Allocator, config: PoolConfig) !Pool {
         if (config.max_open == 0 or config.max_idle > config.max_open)
             return error.InvalidPoolConfig;
-        if (config.validate_on_acquire and config.health_check_timeout != null and config.connection.tls != null)
-            return error.TimedTlsUnsupported;
         return .{ .allocator = allocator, .config = config };
     }
 
@@ -63,14 +60,12 @@ pub const Pool = struct {
 
     /// Bounds the entire acquisition (waiting, stale idle PING and connect)
     /// by a monotonic duration. Expiration returns error.PoolAcquireTimeout.
-    /// Uses cancelable std.Io tasks; timed TLS acquisition is unsupported
-    /// because the current OpenSSL backend uses blocking I/O.
+    /// Uses cancelable std.Io tasks, including nonblocking OpenSSL TLS.
     ///
     /// If a connection becomes available exactly when the timer expires,
     /// the losing acquire is joined and its connection safely returned to
     /// the pool; no slot or socket is leaked.
     pub fn acquireWithTimeout(self: *Pool, io: std.Io, timeout: std.Io.Duration) !*client.Client {
-        if (self.config.connection.tls != null) return error.TimedTlsUnsupported;
         const Outcome = union(enum) {
             acquired: anyerror!*client.Client,
             timer: anyerror!void,
