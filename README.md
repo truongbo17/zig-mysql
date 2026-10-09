@@ -29,7 +29,7 @@ Compatibility is established by a real server test, rather than inferred from a 
 | Ping | Implemented |
 | Text `COM_QUERY` including result rows and NULL | Implemented |
 | Streaming text result rows, with drain on close | Implemented |
-| Streaming metadata and per-row timeouts (non-TLS) | Implemented; live MySQL integration coverage |
+| Streaming metadata and per-row timeouts | TCP/Unix tested; TLS integration in CI |
 | Server error code and SQLSTATE | Implemented |
 | Multi-packet messages, including result rows over 16 MB | Implemented |
 | Prepared statements, typed parameter binding, binary result rows | Implemented |
@@ -38,7 +38,7 @@ Compatibility is established by a real server test, rather than inferred from a 
 | Bounded connection pool with waiting, session reset and broken-connection eviction | Implemented |
 | Lazy idle expiry and max connection lifetime recycling | Implemented; live MySQL integration coverage |
 | Idle health validation, optional PING deadline and reconnect on stale socket | Implemented |
-| Buffered query and prepared execution deadlines (non-TLS TCP/Unix) | Implemented |
+| Buffered query and prepared execution deadlines | TCP/Unix tested; TLS integration in CI |
 | Verified TLS with CA and hostname checks, full SHA2 authentication over TLS | Implemented (OpenSSL 3) |
 | TCP connect timeout | Implemented |
 | TLS handshake/query/stream deadlines | Nonblocking OpenSSL support; acceptance requires live TLS CI |
@@ -56,6 +56,8 @@ Unencrypted TCP does **not** send a cleartext password for full SHA2 authenticat
 zig build test
 zig build integration  # requires the integration MySQL container on 127.0.0.1:33306
 zig build stress-integration  # same MySQL server; concurrent pool fault injection
+zig build timeout-integration  # with Python localhost stall fixtures on :33309/:33310
+bash integration/soak.sh 86400  # optional 24-hour soak with running test MySQL
 zig build mariadb-integration  # requires MariaDB test container on 127.0.0.1:33308
 bash integration/run.sh  # disposable MySQL 8.0, 8.4 and 9.7 Docker matrix
 zig build tls-integration  # requires local MySQL 8.4 on port 33307 and its CA at /tmp/zig-mysql-test-ca.pem
@@ -119,7 +121,7 @@ var pool = try mysql.Pool.init(allocator, .{
     .max_idle_time = .fromSeconds(60), // lazy eviction when next borrowed
     .max_connection_age = .fromSeconds(3600), // checked on return/borrow
     .validate_on_acquire = true, // default: COM_PING before reusing an idle socket
-    .health_check_timeout = .fromSeconds(2), // non-TLS TCP/Unix only
+    .health_check_timeout = .fromSeconds(2), // TCP, Unix and TLS
 });
 defer pool.deinit(io);
 
@@ -166,10 +168,8 @@ must not race with `acquire` / `release`. The configuration's string slices
 thread-safe allocator for concurrent access. An idle connection that fails `COM_PING` will be destroyed and replaced,
 and `stats(io).health_check_failures` exposes the number of discarded stale
 sessions. Idle validation is on by default (one extra RTT on each reused
-connection) and can be disabled for latency-sensitive use. A PING timeout is
-optional; without it, a stalled health check may block. A non-null
-`health_check_timeout` is rejected for TLS pools because OpenSSL currently
-uses blocking I/O.
+connection) and can be disabled for latency-sensitive use. A PING timeout is optional; without it, a stalled health check may
+block. A non-null `health_check_timeout` also works for TLS pools.
 
 ## TLS and end-to-end connection deadlines
 
@@ -253,6 +253,29 @@ timeout and session eviction tests, repeated concurrent operations with
 adding a test does not imply that the implementation passed it. See
 [production readiness](docs/PRODUCTION_READINESS.md) for verified scope,
 remaining risks and prerequisites before deploying to production.
+
+## Operational pool telemetry
+
+`pool.stats(io)` returns a consistent, mutex-protected snapshot with current
+`open`, `idle`, `in_use`, plus cumulative:
+`health_check_failures`, `expired_connections`, `connections_created`,
+`connections_closed`, `waits`, `acquire_timeouts`,
+`connect_failures`, and `reset_failures`. Export these through your
+service metrics registry and alert on increasing acquire timeout, stale
+session, reset failure and reconnect rates. These are process-local counters
+and reset on process restart; no Prometheus exporter is bundled.
+
+## Fault-injection and soak testing
+
+`bash integration/run.sh` starts disposable MySQL and MariaDB instances,
+exercises tests, benchmarks, and a brief repeated stress smoke. It also uses
+two Python loopback fixtures to simulate silent MySQL greeting and stalled
+TLS ServerHello, and restarts the MySQL 8.0 container to exercise
+reconnection. The soak helper `bash integration/soak.sh <seconds>` repeats
+the 32-worker, max-open-8 workload with five forcibly killed sessions per
+iteration against a **running test MySQL** on port 33306. You can use
+`86400` seconds for a separate 24-hour staging acceptance run; short CI
+runs do **not** count as a completed 24-hour soak or memory-leak analysis.
 
 ## Pool performance benchmark
 
