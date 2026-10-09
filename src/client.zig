@@ -222,6 +222,71 @@ pub const Client = struct {
         }
     }
 
+    /// A deadline for the entire PING exchange, not just one socket read.
+    /// Timed commands require cancelable std.Io socket operations; the current
+    /// blocking OpenSSL transport is not supported.
+    pub fn pingWithTimeout(self: *Client, io: std.Io, timeout: std.Io.Duration) !void {
+        return self.withTimeout(void, io, timeout, Client.ping, .{ self, io });
+    }
+
+    /// Times the entire buffered COM_QUERY exchange (including result rows).
+    /// On expiration the socket becomes unusable and must be discarded.
+    /// Streaming queryRows has no deadline; finish or drain it explicitly.
+    pub fn queryWithTimeout(self: *Client, io: std.Io, sql: []const u8, timeout: std.Io.Duration) !Result {
+        return self.withTimeout(Result, io, timeout, Client.query, .{ self, io, sql });
+    }
+
+    /// Times a prepared statement's execution and buffered result read.
+    /// Server-side statement handles must not be reused on timeout.
+    pub fn executeWithTimeout(self: *Client, io: std.Io, statement: Statement, params: []const Param, timeout: std.Io.Duration) !Result {
+        return self.withTimeout(Result, io, timeout, Client.execute, .{ self, io, statement, params });
+    }
+
+    /// Race a command against an elapsed monotonic duration. Joining the losing
+    /// task before returning is essential: otherwise that task could continue
+    /// reading from a socket after the pool has handed it to another caller.
+    fn withTimeout(self: *Client, comptime T: type, io: std.Io, timeout: std.Io.Duration, comptime work: anytype, args: anytype) !T {
+        if (self.wire.tls != null) return error.TimedTlsUnsupported;
+        if (self.broken) return error.ConnectionBroken;
+        const Outcome = union(enum) {
+            operation: anyerror!T,
+            timer: anyerror!void,
+        };
+        var slots: [2]Outcome = undefined;
+        var select: std.Io.Select(Outcome) = .init(io, &slots);
+        defer {
+            // The command may finish just as the timer fires. Any result
+            // discarded due to the race still owns an arena that must be freed.
+            while (select.cancel()) |remaining| switch (remaining) {
+                .operation => |response| {
+                    if (T == Result) {
+                        if (response) |value| {
+                            var result = value;
+                            result.deinit();
+                        } else |_| {}
+                    }
+                },
+                .timer => {},
+            };
+        }
+        try select.concurrent(.operation, work, args);
+        select.concurrent(.timer, std.Io.sleep, .{ io, timeout, .awake }) catch |err| {
+            self.broken = true;
+            return err;
+        };
+        switch (try select.await()) {
+            .operation => |response| return try response,
+            .timer => |elapsed| {
+                try elapsed;
+                // Even if MySQL completed on the server, a response may still
+                // be buffered in transit; resetting the packet sequence alone
+                // would corrupt the next command.
+                self.broken = true;
+                return error.QueryTimeout;
+            },
+        }
+    }
+
     pub fn begin(self: *Client, io: std.Io) !void {
         try self.runControlStatement(io, "START TRANSACTION");
     }

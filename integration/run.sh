@@ -36,6 +36,13 @@ wait_mysql "$container80"
 docker exec -e MYSQL_PWD=zig_mysql_test "$container80" mysql -uroot -e \
   "CREATE USER 'zigtest'@'%' IDENTIFIED WITH mysql_native_password BY 'zig_mysql_test'; GRANT ALL ON zigtest.* TO 'zigtest'@'%';"
 zig build integration
+# Run the reproducible pool benchmark while MySQL 8.0 is available. GitHub
+# runner measurements are diagnostic only; do not use as fixed performance SLAs.
+if [[ "$(uname -s)" == Linux ]]; then
+  timeout 90s zig build -Doptimize=ReleaseFast bench
+else
+  zig build -Doptimize=ReleaseFast bench
+fi
 
 if [[ "$(uname -s)" == Linux ]]; then
   mkdir -p "$socket_dir"

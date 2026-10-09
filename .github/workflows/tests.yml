@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
 
+# Superseded commits should not consume runner time or MySQL images.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   zig:
     runs-on: ubuntu-latest
