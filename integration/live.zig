@@ -320,3 +320,54 @@ test "stream row timeout poisons the session without blocking deinit" {
     try new_connection.ping(io);
     pool.release(io, new_connection);
 }
+
+test "pool idle age and connection age recycle at safe boundaries" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const config: mysql.Config = .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest",
+        .password = "zig_mysql_test",
+        .database = "zigtest",
+    };
+    var idle_pool = try mysql.Pool.init(std.testing.allocator, .{
+        .connection = config,
+        .max_open = 1,
+        .max_idle = 1,
+        .max_idle_time = .fromMilliseconds(0),
+    });
+    defer idle_pool.deinit(io);
+
+    const first = try idle_pool.acquire(io);
+    var first_id = try first.query(io, "SELECT CONNECTION_ID()");
+    const a = try std.fmt.parseInt(u64, first_id.value.rows.items[0].values[0].?, 10);
+    first_id.deinit();
+    idle_pool.release(io, first);
+    try std.testing.expectEqual(@as(usize, 1), idle_pool.stats(io).idle);
+
+    const next = try idle_pool.acquire(io);
+    var second_id = try next.query(io, "SELECT CONNECTION_ID()");
+    const b = try std.fmt.parseInt(u64, second_id.value.rows.items[0].values[0].?, 10);
+    second_id.deinit();
+    try std.testing.expect(a != b);
+    try std.testing.expectEqual(@as(usize, 1), idle_pool.stats(io).expired_connections);
+    idle_pool.release(io, next);
+
+    var life_pool = try mysql.Pool.init(std.testing.allocator, .{
+        .connection = config,
+        .max_open = 1,
+        .max_idle = 1,
+        .max_connection_age = .fromMilliseconds(0),
+    });
+    defer life_pool.deinit(io);
+
+    const aged = try life_pool.acquire(io);
+    try aged.ping(io);
+    life_pool.release(io, aged);
+    try std.testing.expectEqual(@as(usize, 0), life_pool.stats(io).open);
+    try std.testing.expectEqual(@as(usize, 1), life_pool.stats(io).expired_connections);
+    const replacement = try life_pool.acquire(io);
+    try replacement.ping(io);
+    life_pool.release(io, replacement);
+}
