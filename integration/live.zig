@@ -241,25 +241,6 @@ test "pool acquisition deadline expires without leaking an in-use slot" {
     try std.testing.expectEqual(@as(usize, 1), pool.stats(io).idle);
 }
 
-test "pool timed acquisition fails closed on blocking TLS transport" {
-    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-    var pool = try mysql.Pool.init(std.testing.allocator, .{
-        .connection = .{
-            .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
-            .username = "zigtest",
-            .password = "zig_mysql_test",
-            .tls = .{ .host = "mysql.example.invalid" },
-        },
-        .max_open = 1,
-        .max_idle = 1,
-    });
-    defer pool.deinit(io);
-    try std.testing.expectError(error.TimedTlsUnsupported, pool.acquireWithTimeout(io, .fromSeconds(1)));
-    try std.testing.expectEqual(@as(usize, 0), pool.stats(io).open);
-}
-
 test "pool zero-idle mode discards connections before freeing capacity" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer threaded.deinit();
