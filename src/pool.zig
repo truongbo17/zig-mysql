@@ -7,6 +7,13 @@ pub const PoolConfig = struct {
     max_open: usize = 10,
     /// Maximum number of connections retained for reuse.
     max_idle: usize = 10,
+    /// Test idle connections with COM_PING before handing them to borrowers.
+    /// Adds one network round trip to each idle reuse. Disable only if your
+    /// caller is prepared to retry operations when an idle socket has died.
+    validate_on_acquire: bool = true,
+    /// Optional bound for idle PINGs. Requires plain TCP/Unix transport;
+    /// blocking OpenSSL I/O cannot be cancelled by std.Io.Select.
+    health_check_timeout: ?std.Io.Duration = null,
 };
 
 pub const Stats = struct {
@@ -14,6 +21,7 @@ pub const Stats = struct {
     idle: usize,
     /// Includes connections still being established or reset on release.
     in_use: usize,
+    health_check_failures: usize,
 };
 
 /// A bounded, concurrency-safe pool. Every acquired Client must be released
@@ -29,10 +37,13 @@ pub const Pool = struct {
     available: std.Io.Condition = .init,
     idle: std.ArrayList(*client.Client) = .empty,
     open: usize = 0,
+    health_check_failures: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, config: PoolConfig) !Pool {
         if (config.max_open == 0 or config.max_idle > config.max_open)
             return error.InvalidPoolConfig;
+        if (config.validate_on_acquire and config.health_check_timeout != null and config.connection.tls != null)
+            return error.TimedTlsUnsupported;
         return .{ .allocator = allocator, .config = config };
     }
 
@@ -55,6 +66,24 @@ pub const Pool = struct {
                 const connection = self.idle.items[last];
                 self.idle.items.len = last;
                 self.mutex.unlock(io);
+                if (self.config.validate_on_acquire) {
+                    const checked = if (self.config.health_check_timeout) |duration|
+                        connection.pingWithTimeout(io, duration)
+                    else
+                        connection.ping(io);
+                    checked catch {
+                        // Never hand out a socket that might have timed out or
+                        // been closed while sitting idle. Make room for retry.
+                        connection.deinit(io);
+                        self.allocator.destroy(connection);
+                        self.mutex.lockUncancelable(io);
+                        self.health_check_failures += 1;
+                        self.open -= 1;
+                        self.available.signal(io);
+                        // Lock stays held to retry or create a replacement.
+                        continue;
+                    };
+                }
                 return connection;
             }
             if (self.open < self.config.max_open) {
@@ -143,6 +172,7 @@ pub const Pool = struct {
             .open = self.open,
             .idle = self.idle.items.len,
             .in_use = self.open - self.idle.items.len,
+            .health_check_failures = self.health_check_failures,
         };
     }
 
@@ -173,5 +203,14 @@ test "pool capacity is validated before connecting" {
         .connection = connection,
         .max_open = 1,
         .max_idle = 2,
+    }));
+    try std.testing.expectError(error.TimedTlsUnsupported, Pool.init(std.testing.allocator, .{
+        .connection = .{
+            .address = connection.address,
+            .username = "test",
+            .password = "test",
+            .tls = .{ .host = "db.test" },
+        },
+        .health_check_timeout = .fromSeconds(1),
     }));
 }
