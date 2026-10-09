@@ -49,8 +49,19 @@ pub const Wire = struct {
         while (true) {
             const n = @min(remaining.len, protocol.max_packet_payload);
             const header = (protocol.Header{ .length = n, .sequence = self.sequence }).encode();
-            try self.writeAll(io, &header);
-            try self.writeAll(io, remaining[0..n]);
+            if (n <= 4092) {
+                // A single small write avoids a TCP delayed-ACK/Nagle stall
+                // between the four-byte header and the command payload.
+                // Keep the common MySQL command path allocation-free.
+                var packet: [4096]u8 = undefined;
+                @memcpy(packet[0..4], &header);
+                @memcpy(packet[4..][0..n], remaining[0..n]);
+                try self.writeAll(io, packet[0 .. n + 4]);
+            } else {
+                // Avoid copying 16-MiB payloads just to combine a header.
+                try self.writeAll(io, &header);
+                try self.writeAll(io, remaining[0..n]);
+            }
             self.sequence +%= 1;
             remaining = remaining[n..];
             if (n < protocol.max_packet_payload) break;
