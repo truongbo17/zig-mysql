@@ -287,3 +287,36 @@ test "pool zero-idle mode discards connections before freeing capacity" {
         try std.testing.expectEqual(@as(usize, 0), stats.idle);
     }
 }
+
+test "stream row timeout poisons the session without blocking deinit" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var pool = try mysql.Pool.init(std.testing.allocator, .{
+        .connection = .{
+            .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+            .username = "zigtest",
+            .password = "zig_mysql_test",
+            .database = "zigtest",
+        },
+        .max_open = 1,
+        .max_idle = 1,
+    });
+    defer pool.deinit(io);
+
+    const connection = try pool.acquire(io);
+    var fast = try connection.queryRowsWithTimeout(io, "SELECT 1", .fromSeconds(2));
+    try std.testing.expectEqualStrings("1", (try fast.nextWithTimeout(io, .fromSeconds(2))).?.values[0].?);
+    try std.testing.expect((try fast.nextWithTimeout(io, .fromSeconds(2))) == null);
+    fast.deinit(io);
+
+    var slow = try connection.queryRowsWithTimeout(io, "SELECT SLEEP(2)", .fromSeconds(2));
+    try std.testing.expectError(error.QueryTimeout, slow.nextWithTimeout(io, .fromMilliseconds(50)));
+    try std.testing.expect(connection.broken);
+    slow.deinit(io); // must NOT drain blocking rows from broken transport
+    pool.release(io, connection);
+    try std.testing.expectEqual(@as(usize, 0), pool.stats(io).open);
+    const new_connection = try pool.acquire(io);
+    try new_connection.ping(io);
+    pool.release(io, new_connection);
+}
