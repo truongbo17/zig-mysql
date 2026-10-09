@@ -176,8 +176,8 @@ borrowers, with 200 queries per worker and a 16-connection limit. It compares
 idle PING validation enabled vs disabled, reporting requests/second and
 p50/p95/p99 total acquisition-to-release latency. This is a *local* benchmark,
 not a general MySQL driver throughput claim; RTT, CPU, server config, and
-pool reset/schema-selection commands affect measurements. Benchmark is not
-part of standard CI.
+pool reset/schema-selection commands affect measurements. The integration CI matrix runs the same workload and records diagnostic
+measurements in GitHub Actions logs (not fixed performance guarantees).
 
 ## Protocol references
 
