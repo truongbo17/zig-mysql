@@ -22,6 +22,17 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
 
+    const timeout_module = b.createModule(.{
+        .root_source_file = b.path("integration/timeout_local.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    timeout_module.addImport("zig_mysql", module);
+    const timeout_tests = b.addTest(.{ .root_module = timeout_module });
+    const run_timeout = b.addRunArtifact(timeout_tests);
+    const timeout_step = b.step("timeout-integration", "Verify TCP and TLS stalls expire safely");
+    timeout_step.dependOn(&run_timeout.step);
+
     const live_module = b.createModule(.{
         .root_source_file = b.path("integration/live.zig"),
         .target = target,
