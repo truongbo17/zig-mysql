@@ -15,7 +15,7 @@ A native Zig client for the MySQL classic client/server protocol. The project is
 | MySQL | 8.0.46 | TCP, native authentication, ping, text queries, results tested |
 | MySQL | 8.4.11 | Unix socket and verified TLS, full caching SHA2 authentication, ping, prepared SELECT tested |
 | MySQL | 9.7.1 | Unix socket, full caching SHA2 authentication, ping, prepared SELECT tested |
-| MariaDB | 10.11 / 11.x | Planned integration test |
+| MariaDB | 10.11 / 11.4 | Live CI integration added; consult latest CI results |
 
 Compatibility is established by a real server test, rather than inferred from a version string. Server capabilities are negotiated during the handshake.
 
@@ -29,17 +29,19 @@ Compatibility is established by a real server test, rather than inferred from a 
 | Ping | Implemented |
 | Text `COM_QUERY` including result rows and NULL | Implemented |
 | Streaming text result rows, with drain on close | Implemented |
+| Streaming metadata and per-row timeouts (non-TLS) | Implemented; live CI validation required |
 | Server error code and SQLSTATE | Implemented |
 | Multi-packet messages, including result rows over 16 MB | Implemented |
 | Prepared statements, typed parameter binding, binary result rows | Implemented |
 | Transactions (`begin`, `commit`, `rollback`) | Implemented |
 | Session reset (`COM_RESET_CONNECTION`) and schema selection | Implemented |
 | Bounded connection pool with waiting, session reset and broken-connection eviction | Implemented |
+| Lazy idle expiry and max connection lifetime recycling | Implemented; live CI validation required |
 | Idle health validation, optional PING deadline and reconnect on stale socket | Implemented |
 | Buffered query and prepared execution deadlines (non-TLS TCP/Unix) | Implemented |
 | Verified TLS with CA and hostname checks, full SHA2 authentication over TLS | Implemented (OpenSSL 3) |
 | TCP connect timeout | Implemented |
-| TLS query deadline and streaming row deadline | Planned |
+| TLS query/handshake deadlines | Not implemented (blocking OpenSSL backend) |
 
 Unencrypted TCP does **not** send a cleartext password for full SHA2 authentication. Such a server request returns `error.SecureTransportRequired`. `LOCAL INFILE` is disabled. TLS operations currently use blocking OpenSSL I/O, so timed query/execute/ping methods intentionally return `error.TimedTlsUnsupported` over TLS.
 
@@ -53,6 +55,8 @@ Unencrypted TCP does **not** send a cleartext password for full SHA2 authenticat
 ```sh
 zig build test
 zig build integration  # requires the integration MySQL container on 127.0.0.1:33306
+zig build stress-integration  # same MySQL server; concurrent pool fault injection
+zig build mariadb-integration  # requires MariaDB test container on 127.0.0.1:33308
 bash integration/run.sh  # disposable MySQL 8.0, 8.4 and 9.7 Docker matrix
 zig build tls-integration  # requires local MySQL 8.4 on port 33307 and its CA at /tmp/zig-mysql-test-ca.pem
 zig build bench  # separately run with the disposable MySQL 8.0 test container on port 33306
@@ -112,6 +116,8 @@ var pool = try mysql.Pool.init(allocator, .{
     },
     .max_open = 10,
     .max_idle = 5,
+    .max_idle_time = .fromSeconds(60), // lazy eviction when next borrowed
+    .max_connection_age = .fromSeconds(3600), // checked on return/borrow
     .validate_on_acquire = true, // default: COM_PING before reusing an idle socket
     .health_check_timeout = .fromSeconds(2), // non-TLS TCP/Unix only
 });
@@ -189,9 +195,35 @@ defer result.deinit();
 `executeWithTimeout(io, statement, params, duration)` covers prepared
 statements; `pingWithTimeout(io, duration)` covers PING. The existing
 `query`, `execute`, `queryRows` and transaction helpers remain unchanged.
-No deadline is currently enforced for streaming row iteration or TLS traffic.
+For streaming, `queryRowsWithTimeout(io, sql, duration)` bounds the
+initial metadata phase; `RowStream.nextWithTimeout(io, duration)` applies a
+fresh deadline to each row fetch. This is not a whole-stream deadline.
+After a timeout, call `RowStream.deinit(io)`; it skips unsafe draining on
+broken connections and the pool discards that socket. TLS traffic still has
+no deadline.
 Timeout cancellation does not guarantee that the MySQL server has stopped
 executing the SQL: avoid non-idempotent retries without application safeguards.
+
+## Idle and lifetime recycling
+
+Pool configuration can set `max_idle_time` and `max_connection_age`.
+Both use the monotonic awake clock to avoid wall-clock adjustment issues.
+Idle eviction is **lazy**: a socket is evicted when next checked out, not
+by a background timer. Connection age is checked when returning to the pool
+and when checked out; in-flight queries are not interrupted. Expired sessions
+are counted in `pool.stats(io).expired_connections`. A zero duration expires
+a connection at the next relevant boundary. This does not yet implement
+periodic maintenance or a minimum-idle prewarm.
+
+## Reliability and production gate
+
+The CI suite now includes malformed-protocol parser cases, live streaming
+timeout and session eviction tests, repeated concurrent operations with
+`max_open=8`, server-side `KILL CONNECTION` fault injection, and MariaDB
+10.11/11.4 interoperability runs. Successful CI must be verified per commit:
+adding a test does not imply that the implementation passed it. See
+[production readiness](docs/PRODUCTION_READINESS.md) for verified scope,
+remaining risks and prerequisites before deploying to production.
 
 ## Pool performance benchmark
 
