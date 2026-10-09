@@ -121,7 +121,8 @@ var pool = try mysql.Pool.init(allocator, .{
     .max_idle_time = .fromSeconds(60), // lazy eviction when next borrowed
     .max_connection_age = .fromSeconds(3600), // checked on return/borrow
     .validate_on_acquire = true, // default: COM_PING before reusing an idle socket
-    .health_check_timeout = .fromSeconds(2), // TCP, Unix and TLS
+    .health_check_timeout = .fromSeconds(2), // default is 5s
+    .session_reset_timeout = .fromSeconds(3), // default is 5s
 });
 defer pool.deinit(io);
 
@@ -156,7 +157,8 @@ at the deadline boundary) can make the method return slightly after the
 configured duration; the limit is a cancellation deadline, not a hard
 real-time latency guarantee.
 
-A released connection is reset using MySQL `COM_RESET_CONNECTION`, which rolls
+A released connection is reset using MySQL `COM_RESET_CONNECTION` with a
+bounded timeout by default, which rolls
 back transactions, drops temporary tables, clears session variables and closes
 prepared statements. The original database is selected again. Do not use
 prepared statements, streams or a connection after returning it to the pool.
@@ -168,8 +170,12 @@ must not race with `acquire` / `release`. The configuration's string slices
 thread-safe allocator for concurrent access. An idle connection that fails `COM_PING` will be destroyed and replaced,
 and `stats(io).health_check_failures` exposes the number of discarded stale
 sessions. Idle validation is on by default (one extra RTT on each reused
-connection) and can be disabled for latency-sensitive use. A PING timeout is optional; without it, a stalled health check may
-block. A non-null `health_check_timeout` also works for TLS pools.
+connection) and can be disabled for latency-sensitive use. `health_check_timeout`
+defaults to 5 seconds and bounds idle PING checks on TCP, Unix and TLS.
+`session_reset_timeout` defaults to 5 seconds per cleanup command:
+`COM_RESET_CONNECTION` and database restoration must both finish within
+their respective deadlines or that socket is evicted. Set either value to
+`null` only if unbounded cleanup I/O is intentional.
 
 ## TLS and end-to-end connection deadlines
 
