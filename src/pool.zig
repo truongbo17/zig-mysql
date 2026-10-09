@@ -12,7 +12,11 @@ pub const PoolConfig = struct {
     /// caller is prepared to retry operations when an idle socket has died.
     validate_on_acquire: bool = true,
     /// Optional bound for idle PINGs; works with nonblocking TLS as well.
-    health_check_timeout: ?std.Io.Duration = null,
+    /// Defaults to 5s to avoid indefinitely stalled borrow checks.
+    health_check_timeout: ?std.Io.Duration = .fromSeconds(5),
+    /// Per-command deadline for resetting a returned session and restoring
+    /// its original database. Null disables the bound (not recommended).
+    session_reset_timeout: ?std.Io.Duration = .fromSeconds(5),
     /// Close idle sockets older than this monotonic duration on next checkout.
     /// No background scavenger thread is started.
     max_idle_time: ?std.Io.Duration = null,
@@ -210,14 +214,22 @@ pub const Pool = struct {
         var reusable = !connection.broken and !connection.active_stream and !expired;
         var reset_failed = false;
         if (reusable and self.config.max_idle > 0) {
-            connection.resetConnection(io) catch {
+            const reset = if (self.config.session_reset_timeout) |timeout|
+                connection.resetConnectionWithTimeout(io, timeout)
+            else
+                connection.resetConnection(io);
+            reset catch {
                 reusable = false;
                 reset_failed = true;
             };
             // A COM_RESET_CONNECTION does not replace an explicit schema
             // selection for callers that expect the initial default schema.
             if (reusable and self.config.connection.database.len > 0) {
-                connection.selectDatabase(io, self.config.connection.database) catch {
+                const restored = if (self.config.session_reset_timeout) |timeout|
+                    connection.selectDatabaseWithTimeout(io, self.config.connection.database, timeout)
+                else
+                    connection.selectDatabase(io, self.config.connection.database);
+                restored catch {
                     reusable = false;
                     reset_failed = true;
                 };
