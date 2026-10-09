@@ -16,6 +16,7 @@ cleanup() {
   docker rm -f "$container80" "$container84" "$container97" "$mariadb_container" >/dev/null 2>&1 || true
   rm -f "$binary"
   rm -f "$ca_file"
+  rm -f "/tmp/zig-mysql-stall-$prefix.log"
   rmdir "$socket_dir" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -51,6 +52,12 @@ kill "$stall_pid" >/dev/null 2>&1 || true
 stall_pid=""
 rm -f "/tmp/zig-mysql-stall-$prefix.log"
 # Exercise bounded concurrency and forced connection termination against MySQL.
+timeout 120s zig build stress-integration
+# Exercise multiple waves of concurrent operations and forced socket kills.
+timeout 50s bash integration/soak.sh 12
+# Restart the disposable MySQL process to ensure fresh sessions recover.
+docker restart "$container80" >/dev/null
+wait_mysql "$container80"
 timeout 120s zig build stress-integration
 # Run the reproducible pool benchmark while MySQL 8.0 is available. GitHub
 # runner measurements are diagnostic only; do not use as fixed performance SLAs.
