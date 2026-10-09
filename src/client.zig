@@ -192,6 +192,9 @@ pub const Client = struct {
     last_server_error: ?ServerError = null,
     active_stream: bool = false,
     broken: bool = false,
+    // Populated by Pool only. Standalone clients do not track pool lifecycle.
+    pool_created_at: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
+    pool_released_at: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
 
     /// Opens a classic-protocol TCP connection and authenticates.
     /// This first transport supports native auth and cached SHA2 fast auth.
