@@ -47,6 +47,17 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Benchmark pooled MySQL queries on localhost:33306");
     bench_step.dependOn(&run_bench.step);
 
+    const mariadb_module = b.createModule(.{
+        .root_source_file = b.path("integration/mariadb.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mariadb_module.addImport("zig_mysql", module);
+    const mariadb_tests = b.addTest(.{ .root_module = mariadb_module });
+    const run_mariadb = b.addRunArtifact(mariadb_tests);
+    const mariadb_step = b.step("mariadb-integration", "Run live MariaDB integration against localhost:33308");
+    mariadb_step.dependOn(&run_mariadb.step);
+
     const tls_module = b.createModule(.{
         .root_source_file = b.path("integration/tls_local.zig"),
         .target = target,
