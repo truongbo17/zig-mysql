@@ -363,9 +363,15 @@ pub const Client = struct {
             return err;
         };
         defer self.allocator.free(first);
-        if (first.len == 0) return error.Malformed;
+        if (first.len == 0) {
+            self.broken = true;
+            return error.Malformed;
+        }
         if (first[0] == 0xff) return self.serverFailure(first);
-        if (first[0] == 0x00) return error.UnexpectedResult;
+        if (first[0] == 0x00) {
+            self.broken = true;
+            return error.UnexpectedResult;
+        }
         if (first[0] == 0xfb) {
             self.broken = true;
             return error.LocalInfileDisabled;
@@ -408,7 +414,10 @@ pub const Client = struct {
             return err;
         };
         defer self.allocator.free(packet);
-        if (packet.len == 0) return error.Malformed;
+        if (packet.len == 0) {
+            self.broken = true;
+            return error.Malformed;
+        }
         if (packet[0] == 0xff) return self.serverFailure(packet);
         errdefer self.broken = true;
         var c = protocol.Cursor{ .bytes = packet };
@@ -494,7 +503,10 @@ pub const Client = struct {
             return err;
         };
         defer self.allocator.free(first);
-        if (first.len == 0) return error.Malformed;
+        if (first.len == 0) {
+            self.broken = true;
+            return error.Malformed;
+        }
         if (first[0] == 0xff) return self.serverFailure(first);
         errdefer self.broken = true;
         var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -552,16 +564,25 @@ pub const Client = struct {
     }
 
     fn discardPacket(self: *Client, io: std.Io) !void {
-        const packet = try self.wire.read(io);
+        const packet = self.wire.read(io) catch |err| {
+            self.broken = true;
+            return err;
+        };
         defer self.allocator.free(packet);
         if (packet.len > 0 and packet[0] == 0xff) return self.serverFailure(packet);
     }
 
     fn expectEof(self: *Client, io: std.Io) !void {
-        const packet = try self.wire.read(io);
+        const packet = self.wire.read(io) catch |err| {
+            self.broken = true;
+            return err;
+        };
         defer self.allocator.free(packet);
         if (packet.len > 0 and packet[0] == 0xff) return self.serverFailure(packet);
-        if (!isEof(packet)) return error.Malformed;
+        if (!isEof(packet)) {
+            self.broken = true;
+            return error.Malformed;
+        }
     }
 
     fn command(self: *Client, io: std.Io, code: u8, data: []const u8) !void {
