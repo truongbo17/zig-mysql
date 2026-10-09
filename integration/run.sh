@@ -6,11 +6,12 @@ prefix="zig-mysql-test-$$"
 container80="$prefix-80"
 container84="$prefix-84"
 container97="$prefix-97"
+mariadb_container="$prefix-mariadb"
 binary="$(mktemp -t zig-mysql-socket-test.XXXXXX)"
 socket_dir=/tmp/zig-mysql-test-socket
 ca_file=/tmp/zig-mysql-test-ca.pem
 cleanup() {
-  docker rm -f "$container80" "$container84" "$container97" >/dev/null 2>&1 || true
+  docker rm -f "$container80" "$container84" "$container97" "$mariadb_container" >/dev/null 2>&1 || true
   rm -f "$binary"
   rm -f "$ca_file"
   rmdir "$socket_dir" 2>/dev/null || true
@@ -69,4 +70,27 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
     "$binary"
   fi
   docker rm -f "$name" >/dev/null
+done
+
+# Independently validate the classic protocol against supported MariaDB
+# families. Use the upstream MariaDB image's own initialization variables.
+for mariadb_tag in "10.11" "11.4"; do
+  docker run --name "$mariadb_container"     -e MARIADB_ROOT_PASSWORD=zig_mysql_test     -e MARIADB_DATABASE=zigtest     -e MARIADB_USER=zigtest     -e MARIADB_PASSWORD=zig_mysql_test     -p 127.0.0.1:33308:3306 -d "mariadb:$mariadb_tag" >/dev/null
+
+  ready=0
+  for _ in $(seq 1 90); do
+    if docker exec -e MYSQL_PWD=zig_mysql_test "$mariadb_container" mariadb -uroot -N -e "SELECT 1" >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$ready" != 1 ]]; then
+    docker logs "$mariadb_container" >&2
+    exit 1
+  fi
+
+  echo "MariaDB $mariadb_tag integration..."
+  zig build mariadb-integration
+  docker rm -f "$mariadb_container" >/dev/null
 done
