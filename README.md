@@ -35,11 +35,13 @@ Compatibility is established by a real server test, rather than inferred from a 
 | Transactions (`begin`, `commit`, `rollback`) | Implemented |
 | Session reset (`COM_RESET_CONNECTION`) and schema selection | Implemented |
 | Bounded connection pool with waiting, session reset and broken-connection eviction | Implemented |
+| Idle health validation, optional PING deadline and reconnect on stale socket | Implemented |
+| Buffered query and prepared execution deadlines (non-TLS TCP/Unix) | Implemented |
 | Verified TLS with CA and hostname checks, full SHA2 authentication over TLS | Implemented (OpenSSL 3) |
 | TCP connect timeout | Implemented |
-| Query timeout and idle connection health checking | Planned |
+| TLS query deadline and streaming row deadline | Planned |
 
-Unencrypted TCP does **not** send a cleartext password for full SHA2 authentication. Such a server request returns `error.SecureTransportRequired`. `LOCAL INFILE` is disabled. TLS operations currently use blocking OpenSSL I/O.
+Unencrypted TCP does **not** send a cleartext password for full SHA2 authentication. Such a server request returns `error.SecureTransportRequired`. `LOCAL INFILE` is disabled. TLS operations currently use blocking OpenSSL I/O, so timed query/execute/ping methods intentionally return `error.TimedTlsUnsupported` over TLS.
 
 ## Requirements
 
@@ -53,6 +55,7 @@ zig build test
 zig build integration  # requires the integration MySQL container on 127.0.0.1:33306
 bash integration/run.sh  # disposable MySQL 8.0, 8.4 and 9.7 Docker matrix
 zig build tls-integration  # requires local MySQL 8.4 on port 33307 and its CA at /tmp/zig-mysql-test-ca.pem
+zig build bench  # separately run with the disposable MySQL 8.0 test container on port 33306
 ```
 
 `zig build integration` expects a `zigtest` database and a `zigtest` user with password `zig_mysql_test` using `mysql_native_password`. `integration/run.sh` creates these test containers and cleans them up. These credentials are for disposable test servers only.
@@ -109,6 +112,8 @@ var pool = try mysql.Pool.init(allocator, .{
     },
     .max_open = 10,
     .max_idle = 5,
+    .validate_on_acquire = true, // default: COM_PING before reusing an idle socket
+    .health_check_timeout = .fromSeconds(2), // non-TLS TCP/Unix only
 });
 defer pool.deinit(io);
 
@@ -127,9 +132,52 @@ An active stream or broken connection is discarded instead of reused.
 `Pool.deinit` requires all borrowers to have returned their connections and
 must not race with `acquire` / `release`. The configuration's string slices
 (including credentials and TLS settings) must outlive the pool. Provide a
-thread-safe allocator for concurrent access. An idle connection disconnected
-by the server may fail on first use; on-borrow health checks and query timeouts
-are not implemented yet.
+thread-safe allocator for concurrent access. An idle connection that fails `COM_PING` will be destroyed and replaced,
+and `stats(io).health_check_failures` exposes the number of discarded stale
+sessions. Idle validation is on by default (one extra RTT on each reused
+connection) and can be disabled for latency-sensitive use. A PING timeout is
+optional; without it, a stalled health check may block. A non-null
+`health_check_timeout` is rejected for TLS pools because OpenSSL currently
+uses blocking I/O.
+
+## Buffered query deadlines
+
+The optional deadline methods race the entire operation against a monotonic
+timer using `std.Io.Select`. They require a concurrent `std.Io` runtime and
+a cancelable socket transport (plain TCP/Unix; TLS is not supported yet).
+This covers fetching **all** buffered result rows, unlike server-side SELECT
+execution-time hints. Expiration returns `error.QueryTimeout` and marks the
+connection broken: it **must** be closed, never reset and reused, since MySQL
+might still send the old response. A connection pool handles this eviction
+automatically when you call `pool.release(io, connection)`.
+
+```zig
+const connection = try pool.acquire(io);
+defer pool.release(io, connection);
+var result = try connection.queryWithTimeout(
+    io, "SELECT COUNT(*) FROM users", .fromSeconds(2),
+);
+defer result.deinit();
+```
+
+`executeWithTimeout(io, statement, params, duration)` covers prepared
+statements; `pingWithTimeout(io, duration)` covers PING. The existing
+`query`, `execute`, `queryRows` and transaction helpers remain unchanged.
+No deadline is currently enforced for streaming row iteration or TLS traffic.
+Timeout cancellation does not guarantee that the MySQL server has stopped
+executing the SQL: avoid non-idempotent retries without application safeguards.
+
+## Pool performance benchmark
+
+With the disposable integration MySQL container listening on
+`127.0.0.1:33306`, run `zig build -Doptimize=ReleaseFast bench`.
+The reproducible workload executes `SELECT 1` using 1/8/32 concurrent
+borrowers, with 200 queries per worker and a 16-connection limit. It compares
+idle PING validation enabled vs disabled, reporting requests/second and
+p50/p95/p99 total acquisition-to-release latency. This is a *local* benchmark,
+not a general MySQL driver throughput claim; RTT, CPU, server config, and
+pool reset/schema-selection commands affect measurements. Benchmark is not
+part of standard CI.
 
 ## Protocol references
 
