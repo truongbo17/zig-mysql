@@ -144,7 +144,10 @@ TLS backend currently blocks, so `acquireWithTimeout` returns
 `error.TimedTlsUnsupported` when TLS is configured. The ordinary
 `acquire(io)` and `tryAcquire(io)` remain available for TLS connections.
 Unlike query timeouts, an acquisition timeout is not evidence that any SQL
-has executed.
+has executed. Cancellation cleanup (including returning a connection acquired
+at the deadline boundary) can make the method return slightly after the
+configured duration; the limit is a cancellation deadline, not a hard
+real-time latency guarantee.
 
 A released connection is reset using MySQL `COM_RESET_CONNECTION`, which rolls
 back transactions, drops temporary tables, clears session variables and closes
