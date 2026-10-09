@@ -10,7 +10,9 @@ mariadb_container="$prefix-mariadb"
 binary="$(mktemp -t zig-mysql-socket-test.XXXXXX)"
 socket_dir=/tmp/zig-mysql-test-socket
 ca_file=/tmp/zig-mysql-test-ca.pem
+stall_pid=""
 cleanup() {
+  if [[ -n "$stall_pid" ]]; then kill "$stall_pid" >/dev/null 2>&1 || true; fi
   docker rm -f "$container80" "$container84" "$container97" "$mariadb_container" >/dev/null 2>&1 || true
   rm -f "$binary"
   rm -f "$ca_file"
@@ -37,6 +39,17 @@ wait_mysql "$container80"
 docker exec -e MYSQL_PWD=zig_mysql_test "$container80" mysql -uroot -e \
   "CREATE USER 'zigtest'@'%' IDENTIFIED WITH mysql_native_password BY 'zig_mysql_test'; GRANT ALL ON zigtest.* TO 'zigtest'@'%';"
 zig build integration
+python3 -u integration/stall_server.py > "/tmp/zig-mysql-stall-$prefix.log" 2>&1 &
+stall_pid="$!"
+sleep 0.5
+if ! kill -0 "$stall_pid" 2>/dev/null; then
+  cat "/tmp/zig-mysql-stall-$prefix.log" >&2
+  exit 1
+fi
+timeout 15s zig build timeout-integration
+kill "$stall_pid" >/dev/null 2>&1 || true
+stall_pid=""
+rm -f "/tmp/zig-mysql-stall-$prefix.log"
 # Exercise bounded concurrency and forced connection termination against MySQL.
 timeout 120s zig build stress-integration
 # Run the reproducible pool benchmark while MySQL 8.0 is available. GitHub
