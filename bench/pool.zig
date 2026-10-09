@@ -12,8 +12,18 @@ const Worker = struct {
     io: std.Io,
     pool: *mysql.Pool,
     timings_ns: []u64,
+    failure: ?anyerror = null,
 
-    fn run(self: *@This()) !void {
+    // Io.Group.concurrent takes a Cancelable!void task. Preserve ordinary
+    // database errors separately and report them after all workers join.
+    fn run(self: *@This()) std.Io.Cancelable!void {
+        self.runChecked() catch |err| {
+            if (err == error.Canceled) return error.Canceled;
+            self.failure = err;
+        };
+    }
+
+    fn runChecked(self: *@This()) !void {
         for (self.timings_ns) |*duration| {
             const start = std.Io.Clock.awake.now(self.io);
             {
@@ -67,6 +77,9 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, workers: usize, validate: 
         try group.concurrent(io, Worker.run, .{task});
     }
     try group.await(io);
+    for (tasks) |task| {
+        if (task.failure) |err| return err;
+    }
     const elapsed_ns: u64 = @intCast(@max(1, start.untilNow(io, .awake).toNanoseconds()));
     std.mem.sort(u64, latencies, {}, std.sort.asc(u64));
     const throughput = @as(f64, @floatFromInt(total)) * 1_000_000_000.0 /
