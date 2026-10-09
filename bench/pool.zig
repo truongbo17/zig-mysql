@@ -59,7 +59,7 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, workers: usize, validate: 
     });
     defer pool.deinit(io);
 
-    std.debug.print("starting scenario workers={d}, idle_validation={any}...\\n", .{ workers, validate });
+    std.debug.print("starting scenario workers={d}, idle_validation={any}...\n", .{ workers, validate });
     const total = workers * operations_per_worker;
     const latencies = try allocator.alloc(u64, total);
     defer allocator.free(latencies);
