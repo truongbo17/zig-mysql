@@ -41,9 +41,9 @@ Compatibility is established by a real server test, rather than inferred from a 
 | Buffered query and prepared execution deadlines (non-TLS TCP/Unix) | Implemented |
 | Verified TLS with CA and hostname checks, full SHA2 authentication over TLS | Implemented (OpenSSL 3) |
 | TCP connect timeout | Implemented |
-| TLS query/handshake deadlines | Not implemented (blocking OpenSSL backend) |
+| TLS handshake/query/stream deadlines | Nonblocking OpenSSL support; acceptance requires live TLS CI |
 
-Unencrypted TCP does **not** send a cleartext password for full SHA2 authentication. Such a server request returns `error.SecureTransportRequired`. `LOCAL INFILE` is disabled. TLS operations currently use blocking OpenSSL I/O, so timed query/execute/ping methods intentionally return `error.TimedTlsUnsupported` over TLS.
+Unencrypted TCP does **not** send a cleartext password for full SHA2 authentication. Such a server request returns `error.SecureTransportRequired`. `LOCAL INFILE` is disabled. TLS uses nonblocking OpenSSL sockets with cancelable `std.Io` waits (`SSL_ERROR_WANT_READ`/`WANT_WRITE`); currently Linux/macOS only, with 1 ms retry granularity. This is not yet event-loop-native TLS readiness polling.
 
 ## Requirements
 
@@ -145,10 +145,9 @@ var result = try connection.queryWithTimeout(io, "SELECT 1", .fromSeconds(2));
 defer result.deinit();
 ```
 
-A timed acquisition requires cancelable `std.Io` operations. The OpenSSL
-TLS backend currently blocks, so `acquireWithTimeout` returns
-`error.TimedTlsUnsupported` when TLS is configured. The ordinary
-`acquire(io)` and `tryAcquire(io)` remain available for TLS connections.
+A timed acquisition requires cancelable `std.Io` operations. TLS uses nonblocking OpenSSL. Timed acquisition works over TLS; it
+cancels an incomplete handshake and cleans up the socket. The ordinary
+`acquire(io)` and `tryAcquire(io)` remain available.
 Unlike query timeouts, an acquisition timeout is not evidence that any SQL
 has executed. Cancellation cleanup (including returning a connection acquired
 at the deadline boundary) can make the method return slightly after the
@@ -172,11 +171,41 @@ optional; without it, a stalled health check may block. A non-null
 `health_check_timeout` is rejected for TLS pools because OpenSSL currently
 uses blocking I/O.
 
+## TLS and end-to-end connection deadlines
+
+`Client.connectWithTimeout(allocator, io, config, duration)` bounds TCP connect,
+server greeting, TLS negotiation, certificate verification, authentication and
+the complete initial MySQL handshake. It cleans up a half-open socket on
+`error.ConnectTimeout`. `queryWithTimeout`, `executeWithTimeout`,
+`pingWithTimeout`, `queryRowsWithTimeout` and `RowStream.nextWithTimeout`
+also work over TLS with the current nonblocking OpenSSL backend.
+
+```zig
+var secure = try mysql.Client.connectWithTimeout(allocator, io, .{
+    .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:3306") },
+    .username = "app",
+    .password = password,
+    .database = "app",
+    .tls = .{ .host = "db.example.com", .ca_file = "/etc/db-ca.pem" },
+}, .fromSeconds(5));
+defer secure.deinit(io);
+var res = try secure.queryWithTimeout(io, "SELECT 1", .fromSeconds(2));
+defer res.deinit();
+```
+
+The transport currently relies on a cancelable Zig `std.Io` wait after
+OpenSSL `SSL_ERROR_WANT_READ` or `SSL_ERROR_WANT_WRITE`. Socket-level
+nonblocking mode is enabled on Linux/macOS. Timeout and cancel semantics
+require an `std.Io` runtime with working cancellation; closing a connection
+remains mandatory after a timed-out SQL command. A TLS deadline is **not** a
+server-side SQL execution limit. The 1 ms retry cadence may increase latency
+and CPU use relative to native I/O readiness integration.
+
 ## Buffered query deadlines
 
 The optional deadline methods race the entire operation against a monotonic
 timer using `std.Io.Select`. They require a concurrent `std.Io` runtime and
-a cancelable socket transport (plain TCP/Unix; TLS is not supported yet).
+a cancelable transport, including nonblocking OpenSSL TLS.
 This covers fetching **all** buffered result rows, unlike server-side SELECT
 execution-time hints. Expiration returns `error.QueryTimeout` and marks the
 connection broken: it **must** be closed, never reset and reused, since MySQL
@@ -199,8 +228,8 @@ For streaming, `queryRowsWithTimeout(io, sql, duration)` bounds the
 initial metadata phase; `RowStream.nextWithTimeout(io, duration)` applies a
 fresh deadline to each row fetch. This is not a whole-stream deadline.
 After a timeout, call `RowStream.deinit(io)`; it skips unsafe draining on
-broken connections and the pool discards that socket. TLS traffic still has
-no deadline.
+broken connections and the pool discards that socket. Streaming TLS traffic
+supports the same per-row deadlines as TCP.
 Timeout cancellation does not guarantee that the MySQL server has stopped
 executing the SQL: avoid non-idempotent retries without application safeguards.
 
