@@ -19,7 +19,7 @@ pub const PoolConfig = struct {
 pub const Stats = struct {
     open: usize,
     idle: usize,
-    /// Includes connections still being established or reset on release.
+    /// Includes connections being established, reset or closed during release.
     in_use: usize,
     health_check_failures: usize,
 };
@@ -53,6 +53,43 @@ pub const Pool = struct {
         return self.take(io, true);
     }
 
+    /// Bounds the entire acquisition (waiting, stale idle PING and connect)
+    /// by a monotonic duration. Expiration returns error.PoolAcquireTimeout.
+    /// Uses cancelable std.Io tasks; timed TLS acquisition is unsupported
+    /// because the current OpenSSL backend uses blocking I/O.
+    ///
+    /// If a connection becomes available exactly when the timer expires,
+    /// the losing acquire is joined and its connection safely returned to
+    /// the pool; no slot or socket is leaked.
+    pub fn acquireWithTimeout(self: *Pool, io: std.Io, timeout: std.Io.Duration) !*client.Client {
+        if (self.config.connection.tls != null) return error.TimedTlsUnsupported;
+        const Outcome = union(enum) {
+            acquired: anyerror!*client.Client,
+            timer: anyerror!void,
+        };
+        var slots: [2]Outcome = undefined;
+        var select: std.Io.Select(Outcome) = .init(io, &slots);
+        defer {
+            while (select.cancel()) |remaining| switch (remaining) {
+                .acquired => |response| {
+                    if (response) |connection| {
+                        self.release(io, connection);
+                    } else |_| {}
+                },
+                .timer => {},
+            };
+        }
+        try select.concurrent(.acquired, Pool.acquire, .{ self, io });
+        try select.concurrent(.timer, std.Io.sleep, .{ io, timeout, .awake });
+        switch (try select.await()) {
+            .acquired => |response| return try response,
+            .timer => |elapsed| {
+                try elapsed;
+                return error.PoolAcquireTimeout;
+            },
+        }
+    }
+
     /// Returns error.PoolExhausted instead of waiting for a free slot.
     pub fn tryAcquire(self: *Pool, io: std.Io) !*client.Client {
         return self.take(io, false);
@@ -71,7 +108,7 @@ pub const Pool = struct {
                         connection.pingWithTimeout(io, duration)
                     else
                         connection.ping(io);
-                    checked catch {
+                    checked catch |err| {
                         // Never hand out a socket that might have timed out or
                         // been closed while sitting idle. Make room for retry.
                         connection.deinit(io);
@@ -80,6 +117,12 @@ pub const Pool = struct {
                         self.health_check_failures += 1;
                         self.open -= 1;
                         self.available.signal(io);
+                        // Propagate cancellation instead of attempting another
+                        // network connection from a timed-out acquire task.
+                        if (err == error.Canceled) {
+                            self.mutex.unlock(io);
+                            return error.Canceled;
+                        }
                         // Lock stays held to retry or create a replacement.
                         continue;
                     };
@@ -144,17 +187,20 @@ pub const Pool = struct {
                 break :blk true;
             };
         }
-        if (!retained) {
-            std.debug.assert(self.open > 0);
-            self.open -= 1;
+        if (retained) {
+            self.available.signal(io);
+            self.mutex.unlock(io);
+            return;
         }
-        self.available.signal(io);
         self.mutex.unlock(io);
 
-        if (!retained) {
-            connection.deinit(io);
-            self.allocator.destroy(connection);
-        }
+        // Keep the slot reserved until the transport really closes. If we
+        // decremented open before closing, a concurrent borrower could
+        // establish a replacement while the old socket was still alive,
+        // briefly exceeding max_open at the MySQL server.
+        connection.deinit(io);
+        self.allocator.destroy(connection);
+        self.releaseSlot(io);
     }
 
     fn releaseSlot(self: *Pool, io: std.Io) void {

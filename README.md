@@ -123,6 +123,32 @@ var result = try connection.query(io, "SELECT 1");
 defer result.deinit();
 ```
 
+If callers must not wait indefinitely for an exhausted pool, use
+`acquireWithTimeout(io, .fromMilliseconds(250))`. The timeout covers **the
+whole acquisition**: waiting for a slot, checking an idle socket and opening
+a replacement. Expiration returns `error.PoolAcquireTimeout`; the losing
+acquisition is canceled and joined, so any connection acquired at the
+deadline boundary is released rather than leaked. The implementation keeps
+a slot reserved until an evicted connection is fully closed, enforcing the
+configured `max_open` bound even when connections churn.
+
+```zig
+const connection = try pool.acquireWithTimeout(io, .fromMilliseconds(250));
+defer pool.release(io, connection);
+var result = try connection.queryWithTimeout(io, "SELECT 1", .fromSeconds(2));
+defer result.deinit();
+```
+
+A timed acquisition requires cancelable `std.Io` operations. The OpenSSL
+TLS backend currently blocks, so `acquireWithTimeout` returns
+`error.TimedTlsUnsupported` when TLS is configured. The ordinary
+`acquire(io)` and `tryAcquire(io)` remain available for TLS connections.
+Unlike query timeouts, an acquisition timeout is not evidence that any SQL
+has executed. Cancellation cleanup (including returning a connection acquired
+at the deadline boundary) can make the method return slightly after the
+configured duration; the limit is a cancellation deadline, not a hard
+real-time latency guarantee.
+
 A released connection is reset using MySQL `COM_RESET_CONNECTION`, which rolls
 back transactions, drops temporary tables, clears session variables and closes
 prepared statements. The original database is selected again. Do not use
