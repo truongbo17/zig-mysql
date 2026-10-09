@@ -28,6 +28,18 @@ pub const Stats = struct {
     in_use: usize,
     health_check_failures: usize,
     expired_connections: usize,
+    /// Cumulative connection establishments, including recycled sessions.
+    connections_created: usize,
+    /// Cumulative successful socket closures (excludes deinit teardown).
+    connections_closed: usize,
+    /// Times a borrower encountered a fully occupied pool and waited.
+    waits: usize,
+    /// Acquisition deadlines elapsed.
+    acquire_timeouts: usize,
+    /// Failed attempts to open/authenticate a new connection.
+    connect_failures: usize,
+    /// Connections discarded due to failure of session reset/schema restore.
+    reset_failures: usize,
 };
 
 /// A bounded, concurrency-safe pool. Every acquired Client must be released
@@ -45,6 +57,12 @@ pub const Pool = struct {
     open: usize = 0,
     health_check_failures: usize = 0,
     expired_connections: usize = 0,
+    connections_created: usize = 0,
+    connections_closed: usize = 0,
+    waits: usize = 0,
+    acquire_timeouts: usize = 0,
+    connect_failures: usize = 0,
+    reset_failures: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, config: PoolConfig) !Pool {
         if (config.max_open == 0 or config.max_idle > config.max_open)
@@ -88,6 +106,9 @@ pub const Pool = struct {
             .acquired => |response| return try response,
             .timer => |elapsed| {
                 try elapsed;
+                self.mutex.lockUncancelable(io);
+                self.acquire_timeouts += 1;
+                self.mutex.unlock(io);
                 return error.PoolAcquireTimeout;
             },
         }
@@ -111,6 +132,7 @@ pub const Pool = struct {
                     self.allocator.destroy(connection);
                     self.mutex.lockUncancelable(io);
                     self.expired_connections += 1;
+                    self.connections_closed += 1;
                     self.open -= 1;
                     self.available.signal(io);
                     continue;
@@ -127,6 +149,7 @@ pub const Pool = struct {
                         self.allocator.destroy(connection);
                         self.mutex.lockUncancelable(io);
                         self.health_check_failures += 1;
+                        self.connections_closed += 1;
                         self.open -= 1;
                         self.available.signal(io);
                         // Propagate cancellation instead of attempting another
@@ -153,9 +176,15 @@ pub const Pool = struct {
                 };
                 errdefer self.allocator.destroy(connection);
                 connection.* = client.Client.connect(self.allocator, io, self.config.connection) catch |err| {
+                    self.mutex.lockUncancelable(io);
+                    self.connect_failures += 1;
+                    self.mutex.unlock(io);
                     self.releaseSlot(io);
                     return err;
                 };
+                self.mutex.lockUncancelable(io);
+                self.connections_created += 1;
+                self.mutex.unlock(io);
                 connection.pool_created_at = std.Io.Clock.awake.now(io);
                 return connection;
             }
@@ -163,6 +192,7 @@ pub const Pool = struct {
                 self.mutex.unlock(io);
                 return error.PoolExhausted;
             }
+            self.waits += 1;
             self.available.wait(io, &self.mutex) catch |err| {
                 self.mutex.unlock(io);
                 return err;
@@ -178,15 +208,18 @@ pub const Pool = struct {
     pub fn release(self: *Pool, io: std.Io, connection: *client.Client) void {
         const expired = self.isExpired(io, connection, false);
         var reusable = !connection.broken and !connection.active_stream and !expired;
+        var reset_failed = false;
         if (reusable and self.config.max_idle > 0) {
             connection.resetConnection(io) catch {
                 reusable = false;
+                reset_failed = true;
             };
             // A COM_RESET_CONNECTION does not replace an explicit schema
             // selection for callers that expect the initial default schema.
             if (reusable and self.config.connection.database.len > 0) {
                 connection.selectDatabase(io, self.config.connection.database) catch {
                     reusable = false;
+                    reset_failed = true;
                 };
             }
         } else {
@@ -195,6 +228,7 @@ pub const Pool = struct {
 
         self.mutex.lockUncancelable(io);
         if (expired) self.expired_connections += 1;
+        if (reset_failed) self.reset_failures += 1;
         var retained = false;
         if (reusable and self.idle.items.len < self.config.max_idle) {
             connection.pool_released_at = std.Io.Clock.awake.now(io);
@@ -216,6 +250,9 @@ pub const Pool = struct {
         // briefly exceeding max_open at the MySQL server.
         connection.deinit(io);
         self.allocator.destroy(connection);
+        self.mutex.lockUncancelable(io);
+        self.connections_closed += 1;
+        self.mutex.unlock(io);
         self.releaseSlot(io);
     }
 
@@ -254,6 +291,12 @@ pub const Pool = struct {
             .in_use = self.open - self.idle.items.len,
             .health_check_failures = self.health_check_failures,
             .expired_connections = self.expired_connections,
+            .connections_created = self.connections_created,
+            .connections_closed = self.connections_closed,
+            .waits = self.waits,
+            .acquire_timeouts = self.acquire_timeouts,
+            .connect_failures = self.connect_failures,
+            .reset_failures = self.reset_failures,
         };
     }
 
