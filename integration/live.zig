@@ -130,3 +130,83 @@ test "connection pool caps capacity and resets sessions between borrowers" {
     try replacement.ping(io);
     pool.release(io, replacement);
 }
+
+test "buffered query and prepared execute deadlines protect pooled connections" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var pool = try mysql.Pool.init(std.testing.allocator, .{
+        .connection = .{
+            .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+            .username = "zigtest",
+            .password = "zig_mysql_test",
+            .database = "zigtest",
+        },
+        .max_open = 1,
+        .max_idle = 1,
+        .health_check_timeout = .fromSeconds(2),
+    });
+    defer pool.deinit(io);
+
+    const connection = try pool.acquire(io);
+    var fast = try connection.queryWithTimeout(io, "SELECT 42", .fromSeconds(2));
+    try std.testing.expectEqualStrings("42", fast.value.rows.items[0].values[0].?);
+    fast.deinit();
+
+    var statement = try connection.prepare(io, "SELECT ? + 1");
+    var executed = try connection.executeWithTimeout(io, statement, &.{.{ .int = 2 }}, .fromSeconds(2));
+    try std.testing.expectEqualStrings("3", executed.value.rows.items[0].values[0].?);
+    executed.deinit();
+    try connection.closeStatement(io, &statement);
+
+    try std.testing.expectError(error.QueryTimeout, connection.queryWithTimeout(io, "SELECT SLEEP(2)", .fromMilliseconds(50)));
+    try std.testing.expect(connection.broken);
+    try std.testing.expectError(error.ConnectionBroken, connection.ping(io));
+    pool.release(io, connection);
+    try std.testing.expectEqual(@as(usize, 0), pool.stats(io).open);
+
+    const fresh = try pool.acquire(io);
+    try fresh.pingWithTimeout(io, .fromSeconds(2));
+    pool.release(io, fresh);
+}
+
+test "pool health check evicts idle connections killed by server" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const config = mysql.Config{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest",
+        .password = "zig_mysql_test",
+        .database = "zigtest",
+    };
+    var pool = try mysql.Pool.init(std.testing.allocator, .{
+        .connection = config,
+        .max_open = 1,
+        .max_idle = 1,
+        .health_check_timeout = .fromSeconds(2),
+    });
+    defer pool.deinit(io);
+
+    const first = try pool.acquire(io);
+    var id_result = try first.query(io, "SELECT CONNECTION_ID()");
+    const id = try std.fmt.parseInt(u64, id_result.value.rows.items[0].values[0].?, 10);
+    id_result.deinit();
+    pool.release(io, first);
+
+    var killer = try mysql.Client.connect(std.testing.allocator, io, config);
+    defer killer.deinit(io);
+    const kill_sql = try std.fmt.allocPrint(std.testing.allocator, "KILL CONNECTION {d}", .{id});
+    defer std.testing.allocator.free(kill_sql);
+    var killed = try killer.query(io, kill_sql);
+    killed.deinit();
+
+    const replacement = try pool.acquire(io);
+    try replacement.ping(io);
+    try std.testing.expectEqual(@as(usize, 1), pool.stats(io).health_check_failures);
+    var new_id_result = try replacement.query(io, "SELECT CONNECTION_ID()");
+    const new_id = try std.fmt.parseInt(u64, new_id_result.value.rows.items[0].values[0].?, 10);
+    new_id_result.deinit();
+    try std.testing.expect(id != new_id);
+    pool.release(io, replacement);
+}
