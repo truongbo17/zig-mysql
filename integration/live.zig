@@ -310,10 +310,10 @@ test "stream row timeout poisons the session without blocking deinit" {
     try std.testing.expect((try fast.nextWithTimeout(io, .fromSeconds(2))) == null);
     fast.deinit(io);
 
-    var slow = try connection.queryRowsWithTimeout(io, "SELECT SLEEP(2)", .fromSeconds(2));
-    try std.testing.expectError(error.QueryTimeout, slow.nextWithTimeout(io, .fromMilliseconds(50)));
+    // SELECT SLEEP may be evaluated before the server transmits metadata;
+    // an early deadline must poison the socket even if no stream exists yet.
+    try std.testing.expectError(error.QueryTimeout, connection.queryRowsWithTimeout(io, "SELECT SLEEP(2)", .fromMilliseconds(50)));
     try std.testing.expect(connection.broken);
-    slow.deinit(io); // must NOT drain blocking rows from broken transport
     pool.release(io, connection);
     try std.testing.expectEqual(@as(usize, 0), pool.stats(io).open);
     const new_connection = try pool.acquire(io);
