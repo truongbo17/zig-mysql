@@ -285,7 +285,7 @@ test "pool capacity is validated before connecting" {
         .max_open = 1,
         .max_idle = 2,
     }));
-    try std.testing.expectError(error.TimedTlsUnsupported, Pool.init(std.testing.allocator, .{
+    _ = try Pool.init(std.testing.allocator, .{
         .connection = .{
             .address = connection.address,
             .username = "test",
@@ -293,5 +293,5 @@ test "pool capacity is validated before connecting" {
             .tls = .{ .host = "db.test" },
         },
         .health_check_timeout = .fromSeconds(1),
-    }));
+    });
 }
