@@ -21,5 +21,6 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ matrix.zig }}
+      - run: python3 -m unittest discover -s integration -p 'test_release_gate.py'
       - run: zig build test
       - run: bash integration/run.sh
