@@ -451,3 +451,30 @@ test "pool never succeeds when all failover endpoints are unavailable" {
     };
     return error.UnexpectedSuccessfulConnection;
 }
+
+test "failover refuses to bypass primary authentication failure" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var pool = try mysql.Pool.init(std.testing.allocator, .{
+        .connection = .{
+            .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+            .username = "zigtest",
+            .password = "intentionally_wrong_password",
+            .database = "zigtest",
+        },
+        .failover_addresses = &.{
+            .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        },
+        .connect_attempt_timeout = .fromSeconds(2),
+        .max_open = 1,
+        .max_idle = 0,
+    });
+    defer pool.deinit(io);
+    try std.testing.expectError(error.ServerError, pool.acquireWithTimeout(io, .fromSeconds(4)));
+    const stats = pool.stats(io);
+    try std.testing.expectEqual(@as(usize, 0), stats.failover_attempts);
+    try std.testing.expectEqual(@as(usize, 0), stats.failover_successes);
+    try std.testing.expectEqual(@as(usize, 1), stats.connect_failures);
+    try std.testing.expectEqual(@as(usize, 0), stats.open);
+}
