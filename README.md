@@ -431,7 +431,7 @@ and [#11 typed scanner](https://github.com/truongbo17/zig-mysql/issues/11).
 | --- | --- | --- | --- |
 | A0 | [#14 Audit type codes, parsers and row ownership](https://github.com/truongbo17/zig-mysql/issues/14) | — completed | Done — [PR #40](https://github.com/truongbo17/zig-mysql/pull/40) |
 | A1 | [#15 Lossless DECIMAL/NEWDECIMAL](https://github.com/truongbo17/zig-mysql/issues/15) | #14 | Done — [PR #41](https://github.com/truongbo17/zig-mysql/pull/41) |
-| A2 | [#16 DATE/TIME/DATETIME/TIMESTAMP](https://github.com/truongbo17/zig-mysql/issues/16) | #14 | Planned |
+| A2 | [#16 DATE/TIME/DATETIME/TIMESTAMP](https://github.com/truongbo17/zig-mysql/issues/16) | #14 | In progress — [PR #42](https://github.com/truongbo17/zig-mysql/pull/42) (read parsers; native binding pending) |
 | A3 | [#17 JSON/BLOB/UTF-8 byte safety](https://github.com/truongbo17/zig-mysql/issues/17) | #14 | Planned |
 | A4 | [#18 Typed scanner for text rows](https://github.com/truongbo17/zig-mysql/issues/18) | #14–#17 as applicable | Planned |
 | A5 | [#19 Typed scanner for prepared binary rows](https://github.com/truongbo17/zig-mysql/issues/19) | #18 + scalar types | Planned |
@@ -457,6 +457,18 @@ bytes in text and prepared result rows; parse those bytes with
 The destination column precision, scale and SQL mode remain authoritative:
 the server may round or reject values according to schema/settings.
 This is a decimal lexical API, not a base-10 arithmetic library.
+
+### Strict MySQL temporal result decoding (A2)
+
+`mysql.Temporal.parseDate`, `parseDateTime` and `parseTime` parse the
+existing raw result bytes from **text and prepared binary SELECT** into
+explicit Gregorian calendar and signed-duration values. Fractional seconds
+retain exact microseconds; invalid and zero dates fail explicitly.
+`TIME` is a duration and can be negative or longer than 24 hours.
+No timezone conversion is inferred (MySQL TIMESTAMP depends on server
+session timezone). The values are independent numeric structs, with
+no hidden allocations. Native typed prepared **input** binding is not
+implemented by this PR; issue #16 stays open until that follow-up is tested.
 
 ### Sprint B — Correct resultset lifecycle and streaming (P1)
 
