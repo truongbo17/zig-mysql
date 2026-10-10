@@ -66,6 +66,9 @@ pub const Param = union(enum) {
     uint: u64,
     float: f64,
     text: []const u8,
+    /// Exact DECIMAL ASCII, validated prior to writing any packet.
+    /// MySQL accepts this as VAR_STRING and casts according to SQL context.
+    decimal: []const u8,
     bytes: []const u8,
     boolean: bool,
 };
@@ -502,6 +505,12 @@ pub const Client = struct {
         if (self.active_stream) return error.RowsNotConsumed;
         if (statement.closed) return error.StatementClosed;
         if (params.len != statement.parameter_count) return error.ParameterCountMismatch;
+        // Validate all decimal parameters before sending COM_STMT_EXECUTE;
+        // malformed local input cannot desynchronize a healthy connection.
+        for (params) |p| switch (p) {
+            .decimal => |value| _ = try @import("decimal.zig").Decimal.parse(value),
+            else => {},
+        };
         self.wire.reset();
         var payload: std.ArrayList(u8) = .empty;
         defer payload.deinit(self.allocator);
@@ -521,7 +530,7 @@ pub const Client = struct {
                     .int => .{ 8, 0 },
                     .uint => .{ 8, 0x80 },
                     .float => .{ 5, 0 },
-                    .text => .{ 253, 0 },
+                    .text, .decimal => .{ 253, 0 },
                     .bytes => .{ 252, 0 },
                     .boolean => .{ 1, 0 },
                 };
@@ -533,7 +542,7 @@ pub const Client = struct {
                 .int => |v| try appendInt(&payload, self.allocator, @bitCast(v), 8),
                 .uint => |v| try appendInt(&payload, self.allocator, v, 8),
                 .float => |v| try appendInt(&payload, self.allocator, @bitCast(v), 8),
-                .text, .bytes => |v| try appendLenString(&payload, self.allocator, v),
+                .text, .decimal, .bytes => |v| try appendLenString(&payload, self.allocator, v),
                 .boolean => |v| try payload.append(self.allocator, if (v) 1 else 0),
             };
         }
