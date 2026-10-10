@@ -429,12 +429,34 @@ and [#11 typed scanner](https://github.com/truongbo17/zig-mysql/issues/11).
 
 | Order | Small issue (one PR each) | Dependency | Status |
 | --- | --- | --- | --- |
-| A0 | [#14 Audit type codes, parsers and row ownership](https://github.com/truongbo17/zig-mysql/issues/14) | — start here | Planned |
-| A1 | [#15 Lossless DECIMAL/NEWDECIMAL](https://github.com/truongbo17/zig-mysql/issues/15) | #14 | Planned |
+| A0 | [#14 Audit type codes, parsers and row ownership](https://github.com/truongbo17/zig-mysql/issues/14) | — completed | Done — [PR #40](https://github.com/truongbo17/zig-mysql/pull/40) |
+| A1 | [#15 Lossless DECIMAL/NEWDECIMAL](https://github.com/truongbo17/zig-mysql/issues/15) | #14 | Done — [PR #41](https://github.com/truongbo17/zig-mysql/pull/41) |
 | A2 | [#16 DATE/TIME/DATETIME/TIMESTAMP](https://github.com/truongbo17/zig-mysql/issues/16) | #14 | Planned |
 | A3 | [#17 JSON/BLOB/UTF-8 byte safety](https://github.com/truongbo17/zig-mysql/issues/17) | #14 | Planned |
 | A4 | [#18 Typed scanner for text rows](https://github.com/truongbo17/zig-mysql/issues/18) | #14–#17 as applicable | Planned |
 | A5 | [#19 Typed scanner for prepared binary rows](https://github.com/truongbo17/zig-mysql/issues/19) | #18 + scalar types | Planned |
+
+### Lossless DECIMAL binding (A1)
+
+`mysql.Decimal.parse(bytes)` validates a borrowed ASCII DECIMAL/NEWDECIMAL
+lexical value without allocating or converting to floating point. It retains
+the original digits, sign, precision (up to 65 digits) and scale (up to 30).
+Invalid, NaN, exponent and out-of-range literals return explicit errors.
+
+```zig
+const amount = try mysql.Decimal.parse("12345678901234567890.12345678901234567890");
+var result = try conn.execute(io, stmt, &.{.{ .decimal = amount.bytes }});
+defer result.deinit();
+```
+
+`Param.decimal` validates locally **before any command packet is sent**,
+then binds as MySQL `VAR_STRING` for server-side DECIMAL coercion.
+A SELECT of `DECIMAL`/`NEWDECIMAL` is already available as exact ASCII
+bytes in text and prepared result rows; parse those bytes with
+`mysql.Decimal.parse` while the owning `Result` or `RowStream` is alive.
+The destination column precision, scale and SQL mode remain authoritative:
+the server may round or reject values according to schema/settings.
+This is a decimal lexical API, not a base-10 arithmetic library.
 
 ### Sprint B — Correct resultset lifecycle and streaming (P1)
 
