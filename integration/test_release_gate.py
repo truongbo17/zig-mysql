@@ -9,6 +9,7 @@ SHA = "a" * 40
 POLICY = {
     "minimum_soak_seconds": 86400,
     "minimum_sample_count": 1000,
+    "minimum_completed_operations": 1000000,
     "maximum_rss_peak_kb": 524288,
     "maximum_fd_peak": 256,
     "maximum_rss_growth_kb": 65536,
@@ -16,6 +17,10 @@ POLICY = {
 }
 REPORT = {
     "git_sha": SHA,
+    "soak_completed": True,
+    "soak_rounds": 1000,
+    "soak_operations": 1280000,
+    "soak_reported_seconds": 86400,
     "exit_code": 0,
     "requested_seconds": 86400,
     "wall_seconds": 86410,
@@ -81,6 +86,31 @@ class GateTests(unittest.TestCase):
 
     def test_policy_requires_nonzero_limits(self):
         policy = dict(POLICY, maximum_fd_growth=0)
+        self.assertTrue(release_gate.evaluate(REPORT, policy, SHA))
+
+    def test_missing_sql_completion_fails(self):
+        data = dict(REPORT, soak_completed=False, soak_rounds=0, soak_operations=0)
+        self.assertTrue(any("COMPLETE" in x for x in
+                            release_gate.evaluate(data, POLICY, SHA)))
+
+    def test_forged_operation_count_fails(self):
+        data = dict(REPORT, soak_operations=1280001)
+        self.assertTrue(any("inconsistent" in x for x in
+                            release_gate.evaluate(data, POLICY, SHA)))
+
+    def test_insufficient_real_operations_fail(self):
+        data = dict(REPORT, soak_rounds=10, soak_operations=12800)
+        self.assertTrue(any("insufficient completed SQL" in x for x in
+                            release_gate.evaluate(data, POLICY, SHA)))
+
+    def test_soak_reports_another_duration_fails(self):
+        data = dict(REPORT, soak_reported_seconds=12)
+        self.assertTrue(any("duration differs" in x for x in
+                            release_gate.evaluate(data, POLICY, SHA)))
+
+    def test_missing_operations_policy_fails(self):
+        policy = dict(POLICY)
+        del policy["minimum_completed_operations"]
         self.assertTrue(release_gate.evaluate(REPORT, policy, SHA))
 
     def test_nonfinite_fails_closed(self):
