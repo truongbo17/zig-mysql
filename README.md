@@ -282,6 +282,7 @@ var pool = try mysql.Pool.init(allocator, .{
         .{ .ip = try std.Io.net.IpAddress.parseLiteral("10.0.0.2:3306") },
     },
     .connect_attempt_timeout = .fromSeconds(3),
+    .require_writable = true, // reject a replica still in read_only=ON mode
     .max_open = 10,
     .max_idle = 10,
 });
@@ -297,8 +298,15 @@ lag or guarantee that a failed write was not committed. If an existing
 connection dies during a transaction, return/discard it and let application
 transaction and idempotency policy decide whether the operation may be retried.
 Idle sockets remain bound to their connected server until evicted; fallback
-will be considered only for new connections. Do not configure read-only
-replicas as failover targets for a write-capable pool.
+will be considered only for new connections. For write-capable pools,
+`require_writable=true` checks `SELECT @@global.read_only` on every new
+connection and each idle checkout. Read-only candidates are closed and
+rejected; other eligible endpoints can be attempted at connection setup.
+It prevents accidental checkout of a demoted read-only node, but **is not a
+distributed writer lease**: promotion, fencing, quorum, split-brain prevention,
+replica lag, and transaction outcomes still require external HA orchestration.
+Do not set `validate_on_acquire=false` and assume it disables this writer
+check; the writer check is enforced separately.
 
 ## Operational pool telemetry
 
@@ -306,8 +314,8 @@ replicas as failover targets for a write-capable pool.
 `open`, `idle`, `in_use`, plus cumulative counters:
 `health_check_failures`, `expired_connections`, `connections_created`,
 `connections_closed`, `waits`, `acquire_timeouts`,
-`connect_failures`, `reset_failures`, `failover_attempts`, and
-`failover_successes`. The built-in, label-free Prometheus text formatter
+`connect_failures`, `reset_failures`, `failover_attempts`,
+`failover_successes`, and `read_only_rejections`. The built-in, label-free Prometheus text formatter
 can be used in your application's existing metrics HTTP endpoint:
 
 ```zig
@@ -333,8 +341,18 @@ process and one pool** alive across the entire run. It repeatedly drives 16
 borrowers against eight pooled connections, checks counters after every
 round, and logs completed operations. `bash integration/soak.sh 86400` runs
 a 24-hour acceptance workload against a **running test MySQL** on port 33306.
-CI executes a short smoke soak only; it does **not** prove 24-hour uptime,
-stable memory/RSS, or full network-partition/failover behavior. The independent
+On Linux, the soak wrapper observes the inner Zig test process under
+`/proc` and prints a `SOAK_RESOURCE_SUMMARY` JSON record: first/last/peak
+RSS (KiB), open file-descriptor counts, samples and duration. Optional
+`SOAK_METRICS_PATH=/tmp/soak.json`, `SOAK_MAX_RSS_KB=...` and
+`SOAK_MAX_FDS=...` enable evidence retention and absolute resource budgets.
+Short CI smoke results do **not** prove 24-hour uptime or memory leak absence.
+`bash integration/replication_run.sh` starts actual MySQL 8.0 primary/replica
+instances, waits for binlog replication of a marker, asserts that writer-only
+pool rejects the read-only replica, then manually stops/fences the primary,
+promotes the replica, and verifies the marker and a successful post-promotion
+write. This is a controlled promotion drill, **not** production HA certification
+or an automated split-brain-safe failover controller. The independent
 stress suite additionally uses 32 borrowers and injected KILL CONNECTIONs.
 
 ## Pool performance benchmark
