@@ -8,6 +8,10 @@ pub const PoolConfig = struct {
     /// All endpoints must have equivalent roles, schemas and credentials.
     /// Slice lifetime must cover the entire pool lifetime.
     failover_addresses: []const client.Address = &.{},
+    /// Require @@global.read_only=0 on new connections AND idle checkout.
+    /// Prevents handing a read-only replica to a write-capable borrower.
+    /// This is a checkout-time check, NOT a fencing or leader lease.
+    require_writable: bool = false,
     /// Total timeout per TCP/TLS connect and authentication attempt.
     /// Applied separately to the primary and each fallback address.
     connect_attempt_timeout: ?std.Io.Duration = .fromSeconds(5),
@@ -56,6 +60,8 @@ pub const Stats = struct {
     failover_attempts: usize,
     /// Number of successful connections to non-primary endpoints.
     failover_successes: usize,
+    /// Rejected read-only candidates/idle sessions.
+    read_only_rejections: usize,
 
     /// Prometheus text exposition with fixed, label-free metric names.
     /// The returned buffer is owned by the caller. Never include passwords
@@ -87,7 +93,9 @@ pub const Stats = struct {
             "# TYPE zig_mysql_pool_failover_attempts_total counter\n" ++
             "zig_mysql_pool_failover_attempts_total {d}\n" ++
             "# TYPE zig_mysql_pool_failover_successes_total counter\n" ++
-            "zig_mysql_pool_failover_successes_total {d}\n",
+            "zig_mysql_pool_failover_successes_total {d}\n" ++
+            "# TYPE zig_mysql_pool_read_only_rejections_total counter\n" ++
+            "zig_mysql_pool_read_only_rejections_total {d}\n",
             .{
                 self.open, self.idle, self.in_use,
                 self.connections_created, self.connections_closed,
@@ -95,6 +103,7 @@ pub const Stats = struct {
                 self.reset_failures, self.expired_connections,
                 self.waits, self.acquire_timeouts,
                 self.failover_attempts, self.failover_successes,
+                self.read_only_rejections,
             });
     }
 };
@@ -122,6 +131,7 @@ pub const Pool = struct {
     reset_failures: usize = 0,
     failover_attempts: usize = 0,
     failover_successes: usize = 0,
+    read_only_rejections: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, config: PoolConfig) !Pool {
         if (config.max_open == 0 or config.max_idle > config.max_open)
@@ -221,6 +231,28 @@ pub const Pool = struct {
                         continue;
                     };
                 }
+                if (self.config.require_writable) {
+                    self.validateWriter(io, connection) catch |err| {
+                        connection.deinit(io);
+                        self.allocator.destroy(connection);
+                        self.mutex.lockUncancelable(io);
+                        self.connections_closed += 1;
+                        self.open -= 1;
+                        self.available.signal(io);
+                        if (err == error.Canceled) {
+                            self.mutex.unlock(io);
+                            return err;
+                        }
+                        // Read-only sessions must not be borrowed; do not
+                        // silently retry forever if all nodes demoted.
+                        if (err == error.ReadOnlyServer) {
+                            self.mutex.unlock(io);
+                            return err;
+                        }
+                        self.mutex.unlock(io);
+                        return err;
+                    };
+                }
                 return connection;
             }
             if (self.open < self.config.max_open) {
@@ -272,7 +304,19 @@ pub const Pool = struct {
                 client.Client.connectWithTimeout(self.allocator, io, cfg, timeout)
             else
                 client.Client.connect(self.allocator, io, cfg);
-            if (attempt) |connection| {
+            if (attempt) |connected| {
+                var connection = connected;
+                if (self.config.require_writable) {
+                    self.validateWriter(io, &connection) catch |err| {
+                        connection.deinit(io);
+                        self.mutex.lockUncancelable(io);
+                        self.connect_failures += 1;
+                        self.mutex.unlock(io);
+                        if (err == error.ReadOnlyServer and index < self.config.failover_addresses.len)
+                            continue;
+                        return err;
+                    };
+                }
                 if (index > 0) {
                     self.mutex.lockUncancelable(io);
                     self.failover_successes += 1;
@@ -299,6 +343,22 @@ pub const Pool = struct {
             }
         }
         unreachable;
+    }
+
+    fn validateWriter(self: *Pool, io: std.Io, connection: *client.Client) !void {
+        const duration = self.config.connect_attempt_timeout orelse std.Io.Duration.fromSeconds(5);
+        var result = try connection.queryWithTimeout(io, "SELECT @@global.read_only", duration);
+        defer result.deinit();
+        if (result.value != .rows or result.value.rows.items.len != 1 or
+            result.value.rows.items[0].values.len != 1)
+            return error.UnexpectedWriterStatus;
+        const value = result.value.rows.items[0].values[0] orelse return error.UnexpectedWriterStatus;
+        if (std.mem.eql(u8, value, "0")) return;
+        if (!std.mem.eql(u8, value, "1")) return error.UnexpectedWriterStatus;
+        self.mutex.lockUncancelable(io);
+        self.read_only_rejections += 1;
+        self.mutex.unlock(io);
+        return error.ReadOnlyServer;
     }
 
     /// Returns an exclusive connection to the pool. The MySQL session is
@@ -408,6 +468,7 @@ pub const Pool = struct {
             .reset_failures = self.reset_failures,
             .failover_attempts = self.failover_attempts,
             .failover_successes = self.failover_successes,
+            .read_only_rejections = self.read_only_rejections,
         };
     }
 
@@ -465,6 +526,7 @@ test "Prometheus pool exposition contains expected metrics and no configuration 
         .reset_failures = 0,
         .failover_attempts = 3,
         .failover_successes = 1,
+        .read_only_rejections = 0,
     };
     const metrics = try stats.formatPrometheus(std.testing.allocator);
     defer std.testing.allocator.free(metrics);
