@@ -21,7 +21,7 @@ mandatory before production acceptance.
 - **Sprint E, compatibility (P3):** [#32 charsets/SQL modes](https://github.com/truongbo17/zig-mysql/issues/32), [#33 protocol fuzz/large payloads](https://github.com/truongbo17/zig-mysql/issues/33), [#34 IPv6/Windows](https://github.com/truongbo17/zig-mysql/issues/34).
 - **Parallel, production gates (not passed):** [epic #13](https://github.com/truongbo17/zig-mysql/issues/13): [#35 staging setup](https://github.com/truongbo17/zig-mysql/issues/35) → [#36 real 24h soak](https://github.com/truongbo17/zig-mysql/issues/36); [#37 workload and HA/security](https://github.com/truongbo17/zig-mysql/issues/37); [#38 trusted release provenance](https://github.com/truongbo17/zig-mysql/issues/38).
 
-Start **#14**. Size each feature PR so tests, docs and a code review can complete independently. Avoid bundling Sprint A type changes and unrelated operational changes into one PR.
+Start with the first **open** dependency; A4 [#18](https://github.com/truongbo17/zig-mysql/issues/18) is DONE via [PR #44](https://github.com/truongbo17/zig-mysql/pull/44), while prepared binary scanning [#19](https://github.com/truongbo17/zig-mysql/issues/19) is still planned. Previously completed items remain tracked for history. Size each feature PR so tests, docs and a code review can complete independently. Avoid bundling Sprint A type changes and unrelated operational changes into one PR.
 
 ## Ranked feature backlog
 
