@@ -95,6 +95,10 @@ pub fn parseTime(raw: []const u8) !Time {
     const second: u8 = @intCast(try digits(suffix[3..5]));
     if (hours > 838 or minute > 59 or second > 59) return error.InvalidTemporal;
     const frac = try fractional(suffix[5..]);
+    // MySQL TIME range is [-838:59:59, +838:59:59]; a nonzero
+    // fraction at either extreme crosses the documented bound.
+    if (hours == 838 and minute == 59 and second == 59 and frac.value != 0)
+        return error.InvalidTemporal;
     return .{ .negative = negative, .hours = hours,
         .minutes = minute, .seconds = second, .microsecond = frac.value,
         .fractional_digits = frac.digits_count };
@@ -128,10 +132,12 @@ test "DATETIME keeps six-digit microseconds without applying timezone" {
 }
 
 test "MySQL signed duration TIME supports 838h with micros" {
-    const time = try parseTime("-838:59:59.999999");
+    const time = try parseTime("-838:59:59");
     try std.testing.expect(time.negative);
     try std.testing.expectEqual(@as(u16, 838), time.hours);
-    try std.testing.expectEqual(@as(u32, 999999), time.microsecond);
+    try std.testing.expectEqual(@as(u32, 0), time.microsecond);
+    try std.testing.expectError(error.InvalidTemporal, parseTime("-838:59:59.000001"));
+    try std.testing.expectError(error.InvalidTemporal, parseTime("838:59:59.999999"));
     const small = try parseTime("00:00:01.04");
     try std.testing.expectEqual(@as(u32, 40000), small.microsecond);
     try std.testing.expectError(error.InvalidTemporal, parseTime("839:00:00"));
