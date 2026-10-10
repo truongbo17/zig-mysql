@@ -570,3 +570,30 @@ test "MySQL 8.0 strict temporal decoding from text and binary prepared rows" {
     try std.testing.expectEqual(@as(u32, 999999), bt.microsecond);
     binary.deinit();
 }
+
+test "typed text row scanner integration: nullable decimal and streamed SELECT" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var connection = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest", .password = "zig_mysql_test", .database = "zigtest",
+    });
+    defer connection.deinit(io);
+    var result = try connection.query(io,
+        "SELECT CAST(123456789.0050 AS DECIMAL(14,4)), CAST(NULL AS SIGNED), CAST('2024-02-29' AS DATE), CAST(1 AS UNSIGNED)");
+    defer result.deinit();
+    const scan = mysql.TextRow.init(result.value.rows.items[0]);
+    try std.testing.expectEqualStrings("123456789.0050", (try scan.exactDecimal(0)).?.bytes);
+    try std.testing.expect((try scan.int(1)) == null);
+    try std.testing.expectEqual(@as(u8, 29), (try scan.date(2)).?.day);
+    try std.testing.expectEqual(@as(u64, 1), (try scan.uint(3)).?);
+
+    var stream = try connection.queryRows(io, "SELECT 10 UNION ALL SELECT 20");
+    defer stream.deinit(io);
+    const first = mysql.TextRow.init((try stream.next(io)).?);
+    try std.testing.expectEqual(@as(i64, 10), (try first.int(0)).?);
+    const second = mysql.TextRow.init((try stream.next(io)).?);
+    try std.testing.expectEqual(@as(i64, 20), (try second.int(0)).?);
+    try std.testing.expect((try stream.next(io)) == null);
+}
