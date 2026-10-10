@@ -26,8 +26,8 @@ This is an engineering acceptance document, **not a production certification**.
 
 1. **TLS readiness and portability:** nonblocking OpenSSL now yields via 1 ms `std.Io` sleep during SSL_ERROR_WANT_READ/WRITE; verify successful TLS query deadlines and stalled ServerHello with CI. This is **not** event-loop-native readiness polling, Windows support, or proof against all pathological TLS peers. A full TLS transport security review is still necessary.
 2. **Timeout cancellation vs server execution:** client abandonment **does not guarantee MySQL stopped a statement**. Non-idempotent writes require idempotency keys, transaction design and explicit retry policy.
-3. **Observability and operational signals:** pool counters now include created/closed sockets, waits, timeout, connect/reset errors and age/health eviction. Missing: per-command I/O metrics, latency histograms, tracing integration, active transactions and actual exporter/alert deployment.
-4. **Fault matrix breadth:** deterministic silent greeting/TLS ServerHello, server restart and repeated connection KILL now have automated smoke suites. Intermittent packet loss, network partition, multi-host failover, TLS disconnect under load, >16-MiB prepared result tests, and a true 24-hour single-process memory/CPU soak remain incomplete.
+3. **Observability and operational signals:** pool counters include created/closed sockets, waits, timeout, connect/reset errors, age/health eviction, and failover counts. Prometheus text formatting is available, but scrape endpoint, alerts, per-command I/O metrics, latency histograms, tracing integration and active transactions remain unverified.
+4. **Fault matrix breadth:** deterministic silent greeting/TLS ServerHello, server restart, repeated connection KILL and ordered fallback on initial connect have automated suites. Intermittent packet loss, network partition, replicated-cluster failover, TLS disconnect under load, >16-MiB prepared results and a completed 24-hour RSS/CPU soak remain incomplete.
 5. **Compatibility and security:** verify real workload/charset/SQL modes and authentication against deployed server versions, perform dependency review and run independent security assessment. MariaDB interoperability is tested only for cases in `integration/mariadb.zig`.
 
 ## Suggested production acceptance criteria
@@ -70,6 +70,36 @@ The GitHub runner `SELECT 1` benchmarks are diagnostic and must **not** be treat
   A CI smoke (seconds) is not a 24h soak.
 - **Restart:** `integration/run.sh` restarts its disposable MySQL 8.0
   container and runs the stress test again.
+
+## Production hardening: failover and single-process soak
+
+The latest changes introduce **connection-establishment-only failover**
+(`PoolConfig.failover_addresses` and a per-endpoint
+`connect_attempt_timeout`). Each endpoint must be equivalent in permissions,
+schema, role, and TLS trust. Existing queries and transactions are **never
+automatically replayed**: SQL may have committed before the transport failed,
+so transactional retries must be managed and audited at the application layer.
+The counters `failover_attempts` and `failover_successes` are now available
+along with other pool metrics.
+
+`Stats.formatPrometheus(allocator)` provides a label-free Prometheus text
+snapshot for integration into an application's existing metrics endpoint.
+This does not provide an HTTP server, actual scraping, alert rules, latency
+histograms or paging. These still need deploying and verification.
+
+The soak acceptance now uses `integration/soak_local.zig` in **one Zig process
+with one retained Pool**, and `bash integration/soak.sh 86400` requests a
+24-hour single-process run against an existing test MySQL on port 33306.
+Each round checks active pool accounting and connection leak indicators.
+The short CI invocation is only a smoke test. For production graduation
+capture external RSS/CPU/file-descriptor trends, process restarts, a 24h
+error/timeout tally and the full environment configuration.
+
+A test that fails over from unreachable loopback addresses to the live
+MySQL server proves ordered connection establishment; it is **not** evidence
+of a replicated cluster failover with replication lag, fencing or promotion.
+Network partition testing and failover drills on an actual replicated cluster
+remain gates to be signed off separately.
 
 ## Release decision
 
