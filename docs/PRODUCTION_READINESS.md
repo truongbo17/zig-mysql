@@ -65,9 +65,11 @@ The GitHub runner `SELECT 1` benchmarks are diagnostic and must **not** be treat
   `reset_failures`, `connections_created`, `connections_closed`,
   `expired_connections`, `health_check_failures`. Export and alert in
   your application; the library does not ship a metrics exporter.
-- **Repeated faults:** `integration/soak.sh` runs repeated 32-worker
-  stress/fault-injection cycles while an existing MySQL fixture is running.
-  A CI smoke (seconds) is not a 24h soak.
+- **Single-process soak:** `integration/soak.sh` retains one Zig process
+  and one Pool, repeatedly exercising 16 concurrent borrowers with accounting
+  assertions. This suite does not inject server-side KILL commands. The
+  separate `stress-integration` suite uses 32 workers and killed sockets.
+  A CI smoke (seconds) is not a completed 24-hour soak.
 - **Restart:** `integration/run.sh` restarts its disposable MySQL 8.0
   container and runs the stress test again.
 
