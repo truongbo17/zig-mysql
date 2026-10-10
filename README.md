@@ -102,6 +102,31 @@ Do not concatenate untrusted input into SQL. Use `prepare` and `execute` with ty
 
 For large `SELECT` results, use `queryRows` and call `RowStream.deinit(io)` after iteration. Each returned row's byte slices remain valid until the next `next(io)` call. A connection rejects other commands while streaming rows remain unread; `deinit` drains them so the connection can be reused.
 
+## Typed text row scanning (A4, issue #18)
+
+The additive `mysql.TextRow.init(row)` adapter provides **checked**, allocation-free
+conversion of a buffered text result row or `RowStream.next()` row.
+All getters return optionals: SQL NULL stays `null`, not 0 or empty text.
+`int`/`uint` reject overflow, spaces and sign misuse; `string` rejects
+invalid UTF-8, while `bytes` returns opaque binary unchanged.
+`exactDecimal`, `date`, `dateTime` and `time` use the strict
+precision-preserving decoders. Returned slices borrow original row memory.
+
+```zig
+var result = try connection.query(io, "SELECT CAST('123.4500' AS DECIMAL(12,4)), NULL");
+defer result.deinit();
+const scanner = mysql.TextRow.init(result.value.rows.items[0]);
+const money = (try scanner.exactDecimal(0)).?;
+const missing = try scanner.string(1); // null
+_ = money.bytes; // exact decimal ASCII; never auto-cast to float
+_ = missing;
+```
+
+On streams, discard borrowed slices before the next `next()` call; use an
+allocator-owned copy if values need to outlive the row. This is text-protocol
+scanning only; typed prepared/binary rows are tracked under issue #19.
+No ORM or implicit SQL casts are introduced.
+
 ## Connection pooling
 
 `Pool` limits the number of live MySQL connections and waits when all connections
