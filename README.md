@@ -495,19 +495,21 @@ before dependents; Zig 0.16/0.17 tests plus real MySQL/MariaDB integration;
 self-review; no merge when CI is red. Prioritize correctness and SQL data
 fidelity before broadening APIs and chasing benchmarks.
 
-### Sprint A — Lossless data types and typed row scanning (P0)
+### Sprint A — Lossless data types and typed row scanning (P0, COMPLETE)
 
 Epic trackers: [#10 SQL values](https://github.com/truongbo17/zig-mysql/issues/10)
 and [#11 typed scanner](https://github.com/truongbo17/zig-mysql/issues/11).
+
+**Completed:** all six child issues [#14–#19](https://github.com/truongbo17/zig-mysql/issues/19) are closed following merged PRs with exact-head Zig 0.16/0.17 and live MySQL/MariaDB integration evidence. This is **feature completeness**, not production certification; 24-hour soak, cluster HA and security acceptance are still pending in #13.
 
 | Order | Small issue (one PR each) | Dependency | Status |
 | --- | --- | --- | --- |
 | A0 | [#14 Audit type codes, parsers and row ownership](https://github.com/truongbo17/zig-mysql/issues/14) | — completed | Done — [PR #40](https://github.com/truongbo17/zig-mysql/pull/40) |
 | A1 | [#15 Lossless DECIMAL/NEWDECIMAL](https://github.com/truongbo17/zig-mysql/issues/15) | #14 | Done — [PR #41](https://github.com/truongbo17/zig-mysql/pull/41) |
-| A2 | [#16 DATE/TIME/DATETIME/TIMESTAMP](https://github.com/truongbo17/zig-mysql/issues/16) | #14 | In progress — [PR #42](https://github.com/truongbo17/zig-mysql/pull/42) (read parsers; native binding pending) |
-| A3 | [#17 JSON/BLOB/UTF-8 byte safety](https://github.com/truongbo17/zig-mysql/issues/17) | #14 | Planned |
+| A2 | [#16 DATE/TIME/DATETIME/TIMESTAMP](https://github.com/truongbo17/zig-mysql/issues/16) | #14 | Done — [PR #42](https://github.com/truongbo17/zig-mysql/pull/42) + [PR #47](https://github.com/truongbo17/zig-mysql/pull/47), Zig 0.16/0.17 CI PASS |
+| A3 | [#17 JSON/BLOB/UTF-8 byte safety](https://github.com/truongbo17/zig-mysql/issues/17) | #14 | Done — [PR #49](https://github.com/truongbo17/zig-mysql/pull/49), Zig 0.16/0.17 CI PASS |
 | A4 | [#18 Typed scanner for text rows](https://github.com/truongbo17/zig-mysql/issues/18) | #14–#17 as applicable | **Done — [PR #44](https://github.com/truongbo17/zig-mysql/pull/44), Zig 0.16/0.17 CI PASS** |
-| A5 | [#19 Typed scanner for prepared binary rows](https://github.com/truongbo17/zig-mysql/issues/19) | #18 + scalar types | Planned |
+| A5 | [#19 Typed scanner for prepared binary rows](https://github.com/truongbo17/zig-mysql/issues/19) | #18 + scalar types | Done — [PR #50](https://github.com/truongbo17/zig-mysql/pull/50), Zig 0.16/0.17 CI PASS |
 
 ### Lossless DECIMAL binding (A1)
 
@@ -540,8 +542,9 @@ retain exact microseconds; invalid and zero dates fail explicitly.
 `TIME` is a duration and can be negative or longer than 24 hours.
 No timezone conversion is inferred (MySQL TIMESTAMP depends on server
 session timezone). The values are independent numeric structs, with
-no hidden allocations. Native typed prepared **input** binding is not
-implemented by this PR; issue #16 stays open until that follow-up is tested.
+no hidden allocations. Native typed prepared **input** binding for DATE,
+DATETIME, TIMESTAMP and signed TIME is now implemented in [PR #47](https://github.com/truongbo17/zig-mysql/pull/47), validated **before sending** COM_STMT_EXECUTE.
+The server session timezone and SQL mode still govern stored TIMESTAMP values.
 
 ### Sprint B — Correct resultset lifecycle and streaming (P1)
 
@@ -596,9 +599,9 @@ replica is **not** proof of completed production acceptance. See
 [release runbook](docs/RELEASE_RUNBOOK.md) and
 [production-readiness gates](docs/PRODUCTION_READINESS.md).
 
-**Next implementation:** [#14 — type/protocol audit](https://github.com/truongbo17/zig-mysql/issues/14).
-Only proceed to #15–#17 after its API contract is reviewed. Feature PRs may
-continue while the independent OPS release gate remains open.
+**Next implementation:** Sprint B starts at [#20 — multi-result protocol framing and safe drain](https://github.com/truongbo17/zig-mysql/issues/20); [#21](https://github.com/truongbo17/zig-mysql/issues/21) and [#22](https://github.com/truongbo17/zig-mysql/issues/22) depend on #20.
+**Sprint A is complete** (#14–#19, epics #10/#11 closed). Feature PRs may
+continue while the independent OPS release gate #13 remains open.
 
 ## Pool performance benchmark
 
