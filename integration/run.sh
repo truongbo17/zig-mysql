@@ -11,11 +11,12 @@ binary="$(mktemp -t zig-mysql-socket-test.XXXXXX)"
 socket_dir=/tmp/zig-mysql-test-socket
 ca_file=/tmp/zig-mysql-test-ca.pem
 stall_pid=""
+soak_report="/tmp/zig-mysql-soak-${prefix}.json"
 cleanup() {
   if [[ -n "$stall_pid" ]]; then kill "$stall_pid" >/dev/null 2>&1 || true; fi
   docker rm -f "$container80" "$container84" "$container97" "$mariadb_container" >/dev/null 2>&1 || true
   rm -f "$binary"
-  rm -f "$ca_file"
+  rm -f "$ca_file" "$soak_report"
   rm -f "/tmp/zig-mysql-stall-$prefix.log"
   rmdir "$socket_dir" 2>/dev/null || true
 }
@@ -54,7 +55,19 @@ rm -f "/tmp/zig-mysql-stall-$prefix.log"
 # Exercise bounded concurrency and forced connection termination against MySQL.
 timeout 120s zig build stress-integration
 # Exercise multiple waves of concurrent operations and forced socket kills.
-timeout 50s bash integration/soak.sh 12
+SOAK_METRICS_PATH="$soak_report" timeout 50s bash integration/soak.sh 12
+# The CI smoke must NEVER qualify as 24-hour release acceptance. A broken
+# evidence parser (exit code 2) fails the test; only policy rejection (1) is OK.
+gate_result=0
+python3 integration/release_gate.py \
+  --report "$soak_report" \
+  --policy docs/production-soak-policy.json \
+  --expected-sha "$(git rev-parse HEAD)" && gate_result=0 || gate_result=$?
+if [[ "$gate_result" -ne 1 ]]; then
+  echo "CI short soak release gate expected rejection 1; got $gate_result" >&2
+  exit 1
+fi
+echo "Short CI soak was correctly refused by 24-hour production release gate"
 # Restart the disposable MySQL process to ensure fresh sessions recover.
 docker restart "$container80" >/dev/null
 wait_mysql "$container80"
