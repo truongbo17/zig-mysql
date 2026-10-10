@@ -13,7 +13,7 @@ import pathlib
 import re
 import sys
 
-NUMERICS = ("requested_seconds", "wall_seconds", "sample_count",
+NUMERICS = ("requested_seconds", "wall_seconds", "sample_span_seconds", "sample_count",
             "test_process_count", "rss_first_kb", "rss_last_kb", "rss_peak_kb",
             "fds_first", "fds_last", "fds_peak")
 
@@ -52,6 +52,8 @@ def evaluate(report, policy, expected_sha):
         failures.append("observed wall duration is below release minimum")
     if report["sample_count"] < min_samples:
         failures.append("too few measured RSS/FD samples")
+    if report["sample_span_seconds"] < duration - 30:
+        failures.append("resource samples do not cover the required 24-hour interval")
     if report["rss_peak_kb"] > max_rss:
         failures.append("RSS peak exceeded release budget")
     if report["fds_peak"] > max_fd:
