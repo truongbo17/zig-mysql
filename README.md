@@ -407,12 +407,91 @@ workflow has been run yet**, and the job does not publish a release or assert
 global production readiness. A 12-second CI smoke still fails the production
 gate as intended. See the [release runbook](docs/RELEASE_RUNBOOK.md).
 
-## Post-hardening feature roadmap
+## Feature plan and issue tracker
 
-See [Feature Roadmap](docs/FEATURE_ROADMAP.md) for prioritized development:
-lossless DECIMAL/date/time/JSON/BLOB handling and typed row scanning first,
-then stored procedures and multiple resultsets, streaming prepared results,
-transaction helpers, statement caching and high-CCU TLS/observability.
+This is the **canonical README checklist** for the next driver features.
+[Detailed design and acceptance roadmap](docs/FEATURE_ROADMAP.md) contains
+the technical rationale; GitHub issues contain per-PR acceptance checklists.
+**Statuses below are planned**, not implemented, until a linked issue has
+passed exact-commit CI and its PR has been merged. A feature CI success is
+not a production certification. Keep this table and the detailed roadmap
+updated in the same PR that closes or reschedules an issue.
+
+**Execution policy:** one small, backward-compatible feature per PR; dependencies
+before dependents; Zig 0.16/0.17 tests plus real MySQL/MariaDB integration;
+self-review; no merge when CI is red. Prioritize correctness and SQL data
+fidelity before broadening APIs and chasing benchmarks.
+
+### Sprint A — Lossless data types and typed row scanning (P0)
+
+Epic trackers: [#10 SQL values](https://github.com/truongbo17/zig-mysql/issues/10)
+and [#11 typed scanner](https://github.com/truongbo17/zig-mysql/issues/11).
+
+| Order | Small issue (one PR each) | Dependency | Status |
+| --- | --- | --- | --- |
+| A0 | [#14 Audit type codes, parsers and row ownership](https://github.com/truongbo17/zig-mysql/issues/14) | — start here | Planned |
+| A1 | [#15 Lossless DECIMAL/NEWDECIMAL](https://github.com/truongbo17/zig-mysql/issues/15) | #14 | Planned |
+| A2 | [#16 DATE/TIME/DATETIME/TIMESTAMP](https://github.com/truongbo17/zig-mysql/issues/16) | #14 | Planned |
+| A3 | [#17 JSON/BLOB/UTF-8 byte safety](https://github.com/truongbo17/zig-mysql/issues/17) | #14 | Planned |
+| A4 | [#18 Typed scanner for text rows](https://github.com/truongbo17/zig-mysql/issues/18) | #14–#17 as applicable | Planned |
+| A5 | [#19 Typed scanner for prepared binary rows](https://github.com/truongbo17/zig-mysql/issues/19) | #18 + scalar types | Planned |
+
+### Sprint B — Correct resultset lifecycle and streaming (P1)
+
+Epic tracker: [#12 Multiple results and prepared streaming](https://github.com/truongbo17/zig-mysql/issues/12).
+
+| Order | Small issue | Dependency | Status |
+| --- | --- | --- | --- |
+| B1 | [#20 Multi-result framing and safe drain](https://github.com/truongbo17/zig-mysql/issues/20) | — first in Sprint B | Planned |
+| B2 | [#21 Stored procedure CALL resultsets](https://github.com/truongbo17/zig-mysql/issues/21) | #20 | Planned |
+| B3 | [#22 Prepared binary row streaming API](https://github.com/truongbo17/zig-mysql/issues/22) | #20 | Planned |
+| B4 | [#23 100k rows, >16 MiB and streaming fault tests](https://github.com/truongbo17/zig-mysql/issues/23) | #22 | Planned |
+
+### Sprint C — Transactions and prepared-statement cache (P1)
+
+| Order | Small issue | Dependency | Status |
+| --- | --- | --- | --- |
+| C1 | [#24 Savepoints and transaction helpers](https://github.com/truongbo17/zig-mysql/issues/24) | Existing transaction API | Planned |
+| C2 | [#25 Bounded COMMIT/ROLLBACK and ambiguous outcomes](https://github.com/truongbo17/zig-mysql/issues/25) | #24 contract | Planned |
+| C3 | [#26 Per-connection bounded statement cache](https://github.com/truongbo17/zig-mysql/issues/26) | #20, reset safety | Planned |
+| C4 | [#27 Cache benchmarks and regressions](https://github.com/truongbo17/zig-mysql/issues/27) | #26 | Planned |
+
+### Sprint D — Observability, batching and high CCU (P2)
+
+| Order | Small issue | Dependency | Status |
+| --- | --- | --- | --- |
+| D1 | [#28 Per-command metrics and latency hooks](https://github.com/truongbo17/zig-mysql/issues/28) | Existing Pool Stats | Planned |
+| D2 | [#29 Safe batch prepared execute/bulk insert](https://github.com/truongbo17/zig-mysql/issues/29) | Sprint A prepared types | Planned |
+| D3 | [#30 Native TLS readiness waits](https://github.com/truongbo17/zig-mysql/issues/30) | Cancellation safety | Planned |
+| D4 | [#31 1–128 worker TLS/CCU benchmarks](https://github.com/truongbo17/zig-mysql/issues/31) | #28, #30 | Planned |
+
+### Sprint E — Compatibility and protocol robustness (P3)
+
+| Order | Small issue | Dependency | Status |
+| --- | --- | --- | --- |
+| E1 | [#32 Charset, collation and SQL-mode matrix](https://github.com/truongbo17/zig-mysql/issues/32) | Sprint A | Planned |
+| E2 | [#33 Protocol fuzzing and >16 MiB prepared payloads](https://github.com/truongbo17/zig-mysql/issues/33) | Protocol/test fixtures | Planned |
+| E3 | [#34 IPv6 and Windows portability evaluation](https://github.com/truongbo17/zig-mysql/issues/34) | Platform CI | Planned |
+
+### Parallel production acceptance — NOT yet passed
+
+Release blocker epic: [#13 Evidence-backed production acceptance](https://github.com/truongbo17/zig-mysql/issues/13).
+
+| Order | Operational gate | Dependency | Status |
+| --- | --- | --- | --- |
+| OPS1 | [#35 Dedicated isolated staging runner and MySQL](https://github.com/truongbo17/zig-mysql/issues/35) | Runner and protected environment provisioning | Blocked — not verified |
+| OPS2 | [#36 Real 24-hour soak, both Zig versions](https://github.com/truongbo17/zig-mysql/issues/36) | #35 | Blocked — not executed |
+| OPS3 | [#37 Realistic workload, HA and security evaluation](https://github.com/truongbo17/zig-mysql/issues/37) | #35 | Planned — unverified |
+| OPS4 | [#38 Required release checks and trusted provenance](https://github.com/truongbo17/zig-mysql/issues/38) | #36, #37 | Planned — release blocked |
+
+A green 12-second smoke, a prepared 24-hour workflow or a manually promoted
+replica is **not** proof of completed production acceptance. See
+[release runbook](docs/RELEASE_RUNBOOK.md) and
+[production-readiness gates](docs/PRODUCTION_READINESS.md).
+
+**Next implementation:** [#14 — type/protocol audit](https://github.com/truongbo17/zig-mysql/issues/14).
+Only proceed to #15–#17 after its API contract is reviewed. Feature PRs may
+continue while the independent OPS release gate remains open.
 
 ## Pool performance benchmark
 
