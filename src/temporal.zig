@@ -56,7 +56,9 @@ pub fn parseDate(raw: []const u8) !Date {
         else => 31,
     };
     if (day > max_day) return error.InvalidTemporal;
-    return .{ .year = year, .month = month, .day = day };
+    const result = Date{ .year = year, .month = month, .day = day };
+    try validateDate(result);
+    return result;
 }
 
 fn fractional(raw: []const u8) !struct { value: u32, digits_count: u8 } {
@@ -102,6 +104,60 @@ pub fn parseTime(raw: []const u8) !Time {
     return .{ .negative = negative, .hours = hours,
         .minutes = minute, .seconds = second, .microsecond = frac.value,
         .fractional_digits = frac.digits_count };
+}
+
+/// Validate typed temporal values before any COM_STMT_EXECUTE bytes are
+/// written. The SQL schema, timezone and SQL mode still govern storage.
+pub fn validateDate(value: Date) !void {
+    if (value.year == 0 or value.month == 0 or value.day == 0)
+        return error.ZeroDate;
+    // MySQL DATE/DATETIME documented nonzero range is 1000..9999.
+    if (value.year < 1000 or value.year > 9999 or value.month > 12)
+        return error.InvalidTemporal;
+    const days: u8 = switch (value.month) {
+        2 => if (leap(value.year)) 29 else 28,
+        4, 6, 9, 11 => 30,
+        else => 31,
+    };
+    if (value.day > days) return error.InvalidTemporal;
+}
+
+pub fn validateDateTime(value: DateTime) !void {
+    try validateDate(value.date);
+    if (value.hour > 23 or value.minute > 59 or value.second > 59 or
+        value.microsecond > 999999 or value.fractional_digits > 6 or
+        (value.fractional_digits == 0 and value.microsecond != 0))
+        return error.InvalidTemporal;
+}
+
+pub fn validateTime(value: Time) !void {
+    if (value.hours > 838 or value.minutes > 59 or value.seconds > 59 or
+        value.microsecond > 999999 or value.fractional_digits > 6 or
+        (value.fractional_digits == 0 and value.microsecond != 0))
+        return error.InvalidTemporal;
+    if (value.hours == 838 and value.minutes == 59 and value.seconds == 59 and
+        value.microsecond != 0) return error.InvalidTemporal;
+}
+
+test "typed temporal inputs reject malformed calendar and boundaries" {
+    try std.testing.expectError(error.InvalidTemporal,
+        validateDate(.{ .year = 2023, .month = 2, .day = 29 }));
+    try std.testing.expectError(error.ZeroDate,
+        validateDate(.{ .year = 0, .month = 0, .day = 0 }));
+    try validateDate(.{ .year = 2024, .month = 2, .day = 29 });
+    try std.testing.expectError(error.InvalidTemporal,
+        validateDateTime(.{
+            .date = .{ .year = 2024, .month = 2, .day = 29 },
+            .hour = 23, .minute = 59, .second = 59,
+            .microsecond = 1000000, .fractional_digits = 6,
+        }));
+    try std.testing.expectError(error.InvalidTemporal,
+        validateTime(.{ .negative = true, .hours = 838,
+            .minutes = 59, .seconds = 59, .microsecond = 1,
+            .fractional_digits = 6 }));
+    try validateTime(.{ .negative = true, .hours = 837,
+        .minutes = 59, .seconds = 59, .microsecond = 999999,
+        .fractional_digits = 6 });
 }
 
 test "strict Gregorian date, leap day, explicit zero-date policy" {
