@@ -129,6 +129,30 @@ SOAK_MAX_FDS=<budget> bash integration/soak.sh 86400`.
 Set budgets based on expected application workload and representative
 hardware; capture baseline, peak and final RSS/FDs, plus actual alerts.
 
+## Partition / production-release evidence milestone
+
+The Docker replication fixture now deliberately disconnects a still-running
+writable source from its replica network, commits a transaction in isolation,
+checks the read-only replica **does not** expose that transaction or accept
+writer-only checkout, repairs the network and requires explicit replication
+catch-up **before** fencing the source and manual promotion. This confirms a
+specific partition and data-loss hazard is exercised. It does not confer
+quorum, automatic failover, multi-zone fencing or split-brain protection.
+
+The new [release runbook](RELEASE_RUNBOOK.md) and
+`integration/release_gate.py` implement a **fail-closed structural check**
+of a trusted soak report: >=24h observed resource sampling, exactly one test
+process, matching full Git commit SHA, sufficient RSS/FD samples and configured
+growth/peak budgets. The policy in
+`docs/production-soak-policy.json` contains provisional budget thresholds
+that must be calibrated to target hardware and application traffic.
+
+CI now asserts that its 12-second smoke is **rejected** by this gate and
+unit-tests tampered, missing, insufficient and resource-exceeding reports.
+A real completed 24-hour soak still needs to be run separately; the checker
+does not verify authenticity of JSON or live GitHub CI and must not itself
+serve as a release authorization.
+
 ## Release decision
 
 The test matrix establishes an evidence-backed **staging-ready beta**, not a

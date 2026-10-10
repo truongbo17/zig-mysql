@@ -355,6 +355,41 @@ write. This is a controlled promotion drill, **not** production HA certification
 or an automated split-brain-safe failover controller. The independent
 stress suite additionally uses 32 borrowers and injected KILL CONNECTIONs.
 
+## Network partitions and release evidence
+
+The real MySQL replication drill now also injects a **Docker network
+partition** while the primary remains running: it commits a transaction
+on the isolated primary, verifies the read-only replica has not received
+it and rejects writer checkout, then heals the network. It **refuses
+promotion until the missing transaction is replicated**, then fences
+the old primary before manually promoting the replica.
+
+```bash
+bash integration/replication_run.sh
+```
+
+This guards the particular stale-replica promotion scenario but is **not**
+automatic HA, split-brain fencing or a server-side durability guarantee.
+
+Production soak evidence uses a fail-closed offline gate, with a pinned Git
+SHA, single-process 24-hour duration, an observed RSS/FD sampling span, and
+versioned resource budgets:
+
+```bash
+SOAK_METRICS_PATH=/tmp/zig-mysql-soak.json bash integration/soak.sh 86400
+python3 integration/release_gate.py \
+  --report /tmp/zig-mysql-soak.json \
+  --policy docs/production-soak-policy.json \
+  --expected-sha "$(git rev-parse HEAD)"
+```
+
+A CI smoke report of only 12 seconds **must fail** the release gate.
+The checker does not independently validate GitHub checks or attest report
+integrity. Consult the [production release runbook](docs/RELEASE_RUNBOOK.md)
+before considering a critical production deployment. A real 24-hour soak
+and independently reviewed network/security operating controls are still
+outstanding.
+
 ## Pool performance benchmark
 
 With the disposable integration MySQL container listening on

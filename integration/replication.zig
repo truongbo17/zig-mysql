@@ -80,3 +80,36 @@ test "promoted replica accepts writer-only fallback after old primary stops" {
     try std.testing.expectEqual(@as(usize, 0), stats.read_only_rejections);
     try std.testing.expectEqual(@as(usize, 0), stats.in_use);
 }
+
+test "network-partitioned replica must remain read-only and not expose isolated writes" {
+    if (getenv("REPLICATION_PHASE") == null or
+        !std.mem.eql(u8, std.mem.span(getenv("REPLICATION_PHASE").?), "partition"))
+        return error.SkipZigTest;
+
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var observer = try mysql.Client.connect(std.testing.allocator, io, try config(33313));
+    defer observer.deinit(io);
+
+    // Row 3 was committed on the isolated source after network isolation.
+    // Replica must NOT have observed it; promotion here would lose a write.
+    var missing = try observer.queryWithTimeout(io,
+        "SELECT COUNT(*) FROM failover_probe WHERE id=3", .fromSeconds(2));
+    defer missing.deinit();
+    try std.testing.expectEqualStrings("0", missing.value.rows.items[0].values[0].?);
+
+    var pool = try mysql.Pool.init(std.testing.allocator, .{
+        .connection = try config(33313),
+        .require_writable = true,
+        .max_open = 1,
+        .max_idle = 1,
+        .connect_attempt_timeout = .fromSeconds(2),
+    });
+    defer pool.deinit(io);
+    try std.testing.expectError(error.ReadOnlyServer, pool.acquireWithTimeout(io, .fromSeconds(4)));
+    const stats = pool.stats(io);
+    try std.testing.expectEqual(@as(usize, 1), stats.read_only_rejections);
+    try std.testing.expectEqual(@as(usize, 0), stats.open);
+    try std.testing.expectEqual(@as(usize, 0), stats.in_use);
+}
