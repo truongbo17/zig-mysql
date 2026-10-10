@@ -8,6 +8,7 @@ pub const TlsConfig = @import("client.zig").TlsConfig;
 pub const Result = @import("client.zig").Result;
 pub const Param = @import("client.zig").Param;
 pub const Decimal = @import("decimal.zig").Decimal;
+pub const TextRow = @import("text_scan.zig").TextRow;
 pub const Temporal = @import("temporal.zig");
 pub const Statement = @import("client.zig").Statement;
 pub const RowStream = @import("client.zig").RowStream;
@@ -21,6 +22,7 @@ test {
     _ = wire;
     _ = @import("client.zig");
     _ = @import("decimal.zig");
+    _ = @import("text_scan.zig");
     _ = @import("temporal.zig");
     _ = @import("pool.zig");
 }
