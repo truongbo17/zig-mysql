@@ -153,6 +153,28 @@ A real completed 24-hour soak still needs to be run separately; the checker
 does not verify authenticity of JSON or live GitHub CI and must not itself
 serve as a release authorization.
 
+## Long-running staging workflow and post-hardening backlog
+
+The manual self-hosted workflow
+[Staging 24h Soak](../.github/workflows/staging-soak.yml) now exists for an
+approved, isolated MySQL staging environment. It is deliberately **not**
+automatically dispatched: a dedicated self-hosted runner, test database,
+environment secret and review policy must be configured. No completed
+24-hour run is evidenced yet. Do not turn this preparation into a PASS
+assertion or release automatically from a successful local JSON check.
+
+The resource monitor now uses constant memory while measuring long-lived
+soak RSS and file descriptors, and parses a unique SQL workload completion
+record. The release gate additionally requires internally consistent rounds
+and at least 1,000,000 completed SQL operations over 24 hours. These checks
+are suitable as conservative structural preconditions; they do not measure
+realistic workload distributions or provide tamper-resistant attestation.
+
+See [RELEASE_RUNBOOK.md](RELEASE_RUNBOOK.md) for setup, acceptance and
+human approval requirements. Future functionality is prioritized in
+[FEATURE_ROADMAP.md](FEATURE_ROADMAP.md); new features do not imply that
+the outstanding release gates have been satisfied.
+
 ## Release decision
 
 The test matrix establishes an evidence-backed **staging-ready beta**, not a

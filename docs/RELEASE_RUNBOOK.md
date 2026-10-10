@@ -56,6 +56,52 @@ cryptographically attest its origin or fetch a live GitHub Actions result.
 Use an authenticated pipeline to bind the report to its commit and protect the
 artifact against replacement.
 
+## 2a. Dedicated GitHub Actions runner workflow (prepared, not executed)
+
+The manually dispatched workflow at
+[staging-soak.yml](../.github/workflows/staging-soak.yml) pins a full
+24-hour single-process run to the exact main-branch revision; it does not
+run on a GitHub-hosted runner. It requires a Linux x64 self-hosted runner
+with the custom label **zig-mysql-soak**, reachable isolated staging MySQL
+server and OpenSSL/Zig-compatible toolchain. An organization must provision
+this runner and a GitHub Actions environment called **production-validation**
+with authorized reviewers; this environment is NOT automatically created
+by committing the workflow.
+
+Configure these GitHub Actions **environment variables**:
+
+- SOAK_ENVIRONMENT_CLASS = isolated-staging
+- SOAK_MYSQL_ADDRESS = literal IP:port of the dedicated **nonproduction**
+  MySQL fixture, different from the default 127.0.0.1:33306
+- SOAK_MYSQL_USERNAME = least-privileged dedicated test user
+- SOAK_MYSQL_DATABASE = disposable staging test database
+
+Configure this GitHub Actions **environment secret**:
+
+- SOAK_MYSQL_PASSWORD = fixture password. Do not place it in the repo or
+  in job artifacts.
+
+On the Actions page, select **Staging 24h Soak**, choose **Run workflow** on
+main, and select Zig 0.17 or 0.16. The job checks environment configuration,
+source SHA, Python policy tests and Zig unit tests, then executes one 24-hour
+staging run. It runs the release gate on the exact sha and uploads the JSON
+evidence artifact even if validation failed (when a report exists). Job timeout
+is 1500 minutes. It does **not** create a release, tag, deployment or branch
+protection rule.
+
+For a production claim, run the acceptance workload for **each supported Zig
+version**, review independent security/HA results and sign off on the approved
+environment and target database; successful test artifacts alone do not
+authorize a deployment.
+
+The monitor now stores only first/last/peak RSS/FDs, count and timestamps
+(**constant RAM**, not all 24-hour samples), and streams the test log. It
+requires exactly one completion marker and includes completed workload rounds
+and SQL operations in the JSON. The versioned policy requires at least
+1,000,000 completed SELECT operations over 24 hours; this is an initial
+integrity check, *not* a realistic throughput or query-payload SLO.
+Configure stronger load and realistic query shapes before commercial release.
+
 ## 3. Network-partition safety gate
 
 `bash integration/replication_run.sh` builds a disposable MySQL primary and

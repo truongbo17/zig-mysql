@@ -1,0 +1,85 @@
+name: Staging 24h Soak
+
+# One uninterrupted process requires a dedicated runner; GitHub-hosted jobs
+# are not appropriate for 24h acceptance.
+on:
+  workflow_dispatch:
+    inputs:
+      zig_version:
+        description: Zig version for the 24h acceptance run
+        required: true
+        type: choice
+        default: '0.17.0'
+        options:
+          - '0.17.0'
+          - '0.16.0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zig-mysql-staging-24h-soak
+  cancel-in-progress: false
+
+jobs:
+  single-process-soak:
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, linux, x64, zig-mysql-soak]
+    environment: production-validation
+    timeout-minutes: 1500
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ inputs.zig_version }}
+
+      - name: Verify dedicated isolated staging target
+        shell: bash
+        env:
+          SOAK_ENVIRONMENT_CLASS: ${{ vars.SOAK_ENVIRONMENT_CLASS }}
+          SOAK_MYSQL_ADDRESS: ${{ vars.SOAK_MYSQL_ADDRESS }}
+          SOAK_MYSQL_USERNAME: ${{ vars.SOAK_MYSQL_USERNAME }}
+          SOAK_MYSQL_DATABASE: ${{ vars.SOAK_MYSQL_DATABASE }}
+          SOAK_MYSQL_PASSWORD: ${{ secrets.SOAK_MYSQL_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ "$SOAK_ENVIRONMENT_CLASS" == "isolated-staging" ]]
+          [[ -n "$SOAK_MYSQL_ADDRESS" && -n "$SOAK_MYSQL_USERNAME" ]]
+          [[ -n "$SOAK_MYSQL_DATABASE" && -n "$SOAK_MYSQL_PASSWORD" ]]
+          [[ "$SOAK_MYSQL_ADDRESS" != "127.0.0.1:33306" ]]
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 -m unittest discover -s integration -p 'test_release_gate.py'
+          zig build test
+
+      - name: Soak one Zig process for a full 24 hours
+        shell: bash
+        env:
+          SOAK_MYSQL_ADDRESS: ${{ vars.SOAK_MYSQL_ADDRESS }}
+          SOAK_MYSQL_USERNAME: ${{ vars.SOAK_MYSQL_USERNAME }}
+          SOAK_MYSQL_DATABASE: ${{ vars.SOAK_MYSQL_DATABASE }}
+          SOAK_MYSQL_PASSWORD: ${{ secrets.SOAK_MYSQL_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          SOAK_METRICS_PATH="$RUNNER_TEMP/zig-mysql-soak.json" bash integration/soak.sh 86400
+
+      - name: Enforce exact-commit 24h production soak evidence gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 integration/release_gate.py \
+            --report "$RUNNER_TEMP/zig-mysql-soak.json" \
+            --policy docs/production-soak-policy.json \
+            --expected-sha "$GITHUB_SHA"
+
+      - name: Retain resource evidence for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zig-mysql-soak-${{ inputs.zig_version }}-${{ github.sha }}
+          path: ${{ runner.temp }}/zig-mysql-soak.json
+          if-no-files-found: warn
+          retention-days: 90

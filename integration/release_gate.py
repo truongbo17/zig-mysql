@@ -15,7 +15,8 @@ import sys
 
 NUMERICS = ("requested_seconds", "wall_seconds", "sample_span_seconds", "sample_count",
             "test_process_count", "rss_first_kb", "rss_last_kb", "rss_peak_kb",
-            "fds_first", "fds_last", "fds_peak")
+            "fds_first", "fds_last", "fds_peak", "soak_rounds",
+            "soak_operations", "soak_reported_seconds")
 
 
 def evaluate(report, policy, expected_sha):
@@ -40,6 +41,21 @@ def evaluate(report, policy, expected_sha):
         return ["all production policy thresholds must be positive integers"]
     if duration < 86400:
         failures.append("minimum_soak_seconds cannot be less than 86400 for production")
+    min_operations = policy.get("minimum_completed_operations")
+    if isinstance(min_operations, bool) or not isinstance(min_operations, int) or min_operations <= 0:
+        return ["minimum_completed_operations must be a positive integer"]
+    if report.get("soak_completed") is not True:
+        failures.append("Zig soak did not emit a unique SOAK COMPLETE marker")
+    if report["soak_rounds"] < 1:
+        failures.append("no completed Zig workload rounds")
+    # The current in-repository soak workload runs 16 borrowers * 80 queries
+    # per round. This check is structural, not tamper-resistant attestation.
+    if report["soak_operations"] != report["soak_rounds"] * 1280:
+        failures.append("SQL operation count is inconsistent with soak rounds")
+    if report["soak_operations"] < min_operations:
+        failures.append("insufficient completed SQL operations")
+    if report["soak_reported_seconds"] != report["requested_seconds"]:
+        failures.append("Zig soak duration differs from requested monitor duration")
     if report["exit_code"] != 0:
         failures.append("soak process exited unsuccessfully")
     if report["test_process_count"] != 1:
