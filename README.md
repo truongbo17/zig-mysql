@@ -127,6 +127,28 @@ allocator-owned copy if values need to outlive the row. This is text-protocol
 scanning only; typed prepared/binary rows are tracked under issue #19.
 No ORM or implicit SQL casts are introduced.
 
+## SQL JSON, UTF-8 and BLOB value views (A3, issue #17)
+
+`mysql.SqlBytes.blob(raw)` retains arbitrary bytes including embedded
+NUL and non-UTF-8 bytes with no allocation. `mysql.SqlBytes.text(raw)`
+validates UTF-8, and `mysql.SqlBytes.json(allocator, raw)` validates
+UTF-8 and JSON with temporary parser allocations; the returned view
+still **borrows** the original bytes. The MySQL/MariaDB server may
+canonicalize JSON during storage.
+
+```zig
+const blob = mysql.SqlBytes.blob(row.values[0].?); // opaque bytes
+const utf8 = try mysql.SqlBytes.text(row.values[1].?);
+const validated = try mysql.SqlBytes.json(allocator, row.values[2].?);
+_ = .{blob, utf8, validated};
+```
+
+All views expire on `Result.deinit()` (or the next `RowStream.next()`);
+copy into caller-owned storage to extend their lifetimes. These
+helpers never enable LOCAL INFILE or implicitly decode a BLOB as text.
+Unit and live MySQL/MariaDB tests cover invalid UTF-8, embedded NUL and
+prepared BLOB/JSON roundtrips.
+
 ## Connection pooling
 
 `Pool` limits the number of live MySQL connections and waits when all connections
