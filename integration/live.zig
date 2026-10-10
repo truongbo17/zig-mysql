@@ -597,3 +597,73 @@ test "typed text row scanner integration: nullable decimal and streamed SELECT" 
     try std.testing.expectEqual(@as(i64, 20), (try second.int(0)).?);
     try std.testing.expect((try stream.next(io)) == null);
 }
+
+test "MySQL 8.0 native binary prepared DATE, DATETIME, TIME and TIMESTAMP roundtrip" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest",
+        .password = "zig_mysql_test",
+        .database = "zigtest",
+    });
+    defer conn.deinit(io);
+    var timezone = try conn.query(io, "SET time_zone = '+00:00'");
+    timezone.deinit();
+    var created = try conn.query(io,
+        "CREATE TEMPORARY TABLE zig_temporal_bind (d DATE, dt DATETIME(6), t TIME(6), ts TIMESTAMP(6))");
+    created.deinit();
+
+    var ins = try conn.prepare(io, "INSERT INTO zig_temporal_bind VALUES (?, ?, ?, ?)");
+    defer conn.closeStatement(io, &ins) catch {};
+    const date = mysql.Temporal.Date{ .year = 2024, .month = 2, .day = 29 };
+    const dt = mysql.Temporal.DateTime{
+        .date = date, .hour = 23, .minute = 59, .second = 59,
+        .microsecond = 123456, .fractional_digits = 6,
+    };
+    const tm = mysql.Temporal.Time{
+        .negative = true, .hours = 837, .minutes = 59, .seconds = 59,
+        .microsecond = 999999, .fractional_digits = 6,
+    };
+    const ts = mysql.Temporal.DateTime{
+        .date = date, .hour = 1, .minute = 2, .second = 3,
+        .microsecond = 12, .fractional_digits = 6,
+    };
+    try std.testing.expectError(error.InvalidTemporal, conn.execute(io, ins,
+        &.{ .{ .date = .{ .year = 2023, .month = 2, .day = 29 } },
+            .{ .datetime = dt }, .{ .time = tm }, .{ .timestamp = ts } }));
+    try conn.ping(io);
+
+    var written = try conn.execute(io, ins, &.{
+        .{ .date = date }, .{ .datetime = dt },
+        .{ .time = tm }, .{ .timestamp = ts },
+    });
+    try std.testing.expectEqual(@as(u64, 1), written.value.ok.affected_rows);
+    written.deinit();
+    var text = try conn.query(io, "SELECT d, dt, t, ts FROM zig_temporal_bind");
+    const values = text.value.rows.items[0].values;
+    _ = try mysql.Temporal.parseDate(values[0].?);
+    const outdt = try mysql.Temporal.parseDateTime(values[1].?);
+    try std.testing.expectEqual(@as(u32, 123456), outdt.microsecond);
+    const outtime = try mysql.Temporal.parseTime(values[2].?);
+    try std.testing.expect(outtime.negative);
+    try std.testing.expectEqual(@as(u16, 837), outtime.hours);
+    try std.testing.expectEqual(@as(u32, 999999), outtime.microsecond);
+    const outts = try mysql.Temporal.parseDateTime(values[3].?);
+    try std.testing.expectEqual(@as(u32, 12), outts.microsecond);
+    text.deinit();
+
+    var select = try conn.prepare(io, "SELECT d, dt, t, ts FROM zig_temporal_bind");
+    defer conn.closeStatement(io, &select) catch {};
+    var binary = try conn.execute(io, select, &.{});
+    const b = binary.value.rows.items[0].values;
+    _ = try mysql.Temporal.parseDate(b[0].?);
+    try std.testing.expectEqual(@as(u32, 123456),
+        (try mysql.Temporal.parseDateTime(b[1].?)).microsecond);
+    try std.testing.expectEqual(@as(u32, 999999),
+        (try mysql.Temporal.parseTime(b[2].?)).microsecond);
+    try std.testing.expectEqual(@as(u32, 12),
+        (try mysql.Temporal.parseDateTime(b[3].?)).microsecond);
+    binary.deinit();
+}
