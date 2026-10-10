@@ -3,6 +3,14 @@ const client = @import("client.zig");
 
 pub const PoolConfig = struct {
     connection: client.Config,
+    /// Optional equivalent MySQL endpoints, attempted in order only when
+    /// opening a NEW connection fails. No SQL is automatically replayed.
+    /// All endpoints must have equivalent roles, schemas and credentials.
+    /// Slice lifetime must cover the entire pool lifetime.
+    failover_addresses: []const client.Address = &.{},
+    /// Total timeout per TCP/TLS connect and authentication attempt.
+    /// Applied separately to the primary and each fallback address.
+    connect_attempt_timeout: ?std.Io.Duration = .fromSeconds(5),
     /// Maximum number of connections (idle + checked out + connecting).
     max_open: usize = 10,
     /// Maximum number of connections retained for reuse.
@@ -44,6 +52,10 @@ pub const Stats = struct {
     connect_failures: usize,
     /// Connections discarded due to failure of session reset/schema restore.
     reset_failures: usize,
+    /// Number of attempts to non-primary endpoints.
+    failover_attempts: usize,
+    /// Number of successful connections to non-primary endpoints.
+    failover_successes: usize,
 };
 
 /// A bounded, concurrency-safe pool. Every acquired Client must be released
@@ -67,6 +79,8 @@ pub const Pool = struct {
     acquire_timeouts: usize = 0,
     connect_failures: usize = 0,
     reset_failures: usize = 0,
+    failover_attempts: usize = 0,
+    failover_successes: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, config: PoolConfig) !Pool {
         if (config.max_open == 0 or config.max_idle > config.max_open)
@@ -179,10 +193,7 @@ pub const Pool = struct {
                     return err;
                 };
                 errdefer self.allocator.destroy(connection);
-                connection.* = client.Client.connect(self.allocator, io, self.config.connection) catch |err| {
-                    self.mutex.lockUncancelable(io);
-                    self.connect_failures += 1;
-                    self.mutex.unlock(io);
+                connection.* = self.connectConfigured(io) catch |err| {
                     self.releaseSlot(io);
                     return err;
                 };
@@ -202,6 +213,40 @@ pub const Pool = struct {
                 return err;
             };
         }
+    }
+
+    /// Fail over only during connection setup. Never replay an in-flight
+    /// statement or transaction, whose server-side outcome may be unknown.
+    fn connectConfigured(self: *Pool, io: std.Io) !client.Client {
+        var index: usize = 0;
+        while (index <= self.config.failover_addresses.len) : (index += 1) {
+            var cfg = self.config.connection;
+            if (index > 0) {
+                cfg.address = self.config.failover_addresses[index - 1];
+                self.mutex.lockUncancelable(io);
+                self.failover_attempts += 1;
+                self.mutex.unlock(io);
+            }
+            const attempt = if (self.config.connect_attempt_timeout) |timeout|
+                client.Client.connectWithTimeout(self.allocator, io, cfg, timeout)
+            else
+                client.Client.connect(self.allocator, io, cfg);
+            if (attempt) |connection| {
+                if (index > 0) {
+                    self.mutex.lockUncancelable(io);
+                    self.failover_successes += 1;
+                    self.mutex.unlock(io);
+                }
+                return connection;
+            } else |err| {
+                self.mutex.lockUncancelable(io);
+                self.connect_failures += 1;
+                self.mutex.unlock(io);
+                if (err == error.Canceled or err == error.OutOfMemory) return err;
+                if (index == self.config.failover_addresses.len) return err;
+            }
+        }
+        unreachable;
     }
 
     /// Returns an exclusive connection to the pool. The MySQL session is
@@ -309,6 +354,8 @@ pub const Pool = struct {
             .acquire_timeouts = self.acquire_timeouts,
             .connect_failures = self.connect_failures,
             .reset_failures = self.reset_failures,
+            .failover_attempts = self.failover_attempts,
+            .failover_successes = self.failover_successes,
         };
     }
 
