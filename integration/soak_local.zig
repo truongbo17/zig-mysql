@@ -41,12 +41,32 @@ test "one-process long-lived pool soak: slot accounting remains bounded" {
         10;
     if (seconds == 0 or seconds > 86_400) return error.InvalidSoakDuration;
 
+    // In a dedicated staging runner these env vars target a disposable,
+    // isolated MySQL database. The fallback is the local CI test fixture.
+    // getenv-owned environment string slices remain alive for this test.
+    const address = if (getenv("SOAK_MYSQL_ADDRESS")) |value|
+        std.mem.span(value)
+    else
+        "127.0.0.1:33306";
+    const username = if (getenv("SOAK_MYSQL_USERNAME")) |value|
+        std.mem.span(value)
+    else
+        "zigtest";
+    const password = if (getenv("SOAK_MYSQL_PASSWORD")) |value|
+        std.mem.span(value)
+    else
+        "zig_mysql_test";
+    const database = if (getenv("SOAK_MYSQL_DATABASE")) |value|
+        std.mem.span(value)
+    else
+        "zigtest";
+
     var pool = try mysql.Pool.init(std.heap.page_allocator, .{
         .connection = .{
-            .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
-            .username = "zigtest",
-            .password = "zig_mysql_test",
-            .database = "zigtest",
+            .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral(address) },
+            .username = username,
+            .password = password,
+            .database = database,
         },
         .max_open = 8,
         .max_idle = 8,
