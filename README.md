@@ -390,6 +390,30 @@ before considering a critical production deployment. A real 24-hour soak
 and independently reviewed network/security operating controls are still
 outstanding.
 
+## Dedicated 24-hour staging acceptance workflow
+
+A new manual GitHub Actions workflow, [Staging 24h Soak](.github/workflows/staging-soak.yml),
+runs the single Zig pool test for 24 hours on a **dedicated self-hosted Linux
+runner** (label: zig-mysql-soak). It targets only an isolated nonproduction
+MySQL server supplied via GitHub environment variables/secrets, not the
+default disposable CI fixture. The production-soak gate enforces a full
+sample interval, fixed Git SHA, successful Zig workload completion with SQL
+operation totals, bounded RSS and FDs, and the configured version-controlled
+resource budgets. JSON evidence is retained as an Actions artifact.
+
+The runner, protected approval environment and isolated MySQL server
+must be provisioned before the manual workflow can execute. **No 24-hour
+workflow has been run yet**, and the job does not publish a release or assert
+global production readiness. A 12-second CI smoke still fails the production
+gate as intended. See the [release runbook](docs/RELEASE_RUNBOOK.md).
+
+## Post-hardening feature roadmap
+
+See [Feature Roadmap](docs/FEATURE_ROADMAP.md) for prioritized development:
+lossless DECIMAL/date/time/JSON/BLOB handling and typed row scanning first,
+then stored procedures and multiple resultsets, streaming prepared results,
+transaction helpers, statement caching and high-CCU TLS/observability.
+
 ## Pool performance benchmark
 
 With the disposable integration MySQL container listening on
