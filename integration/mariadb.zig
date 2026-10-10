@@ -97,3 +97,49 @@ test "MariaDB lossless DECIMAL binding and binary/text roundtrip" {
     try std.testing.expectEqual(@as(u8, 246), binary.value.rows.columns[0].type_code);
     binary.deinit();
 }
+
+test "MariaDB strict temporal decoding from text and binary prepared rows" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33308") },
+        .username = "zigtest",
+        .password = "zig_mysql_test",
+        .database = "zigtest",
+    });
+    defer conn.deinit(io);
+
+    var setup = try conn.query(io,
+        "CREATE TEMPORARY TABLE zig_temporal_test (d DATE, dt DATETIME(6), t TIME(6))");
+    setup.deinit();
+    var inserted = try conn.query(io,
+        "INSERT INTO zig_temporal_test VALUES ('2024-02-29', '2024-02-29 23:59:59.123456', '-837:59:59.999999')");
+    inserted.deinit();
+
+    var text = try conn.query(io, "SELECT d, dt, t FROM zig_temporal_test");
+    const row = text.value.rows.items[0];
+    const d = try mysql.Temporal.parseDate(row.values[0].?);
+    const dt = try mysql.Temporal.parseDateTime(row.values[1].?);
+    const duration = try mysql.Temporal.parseTime(row.values[2].?);
+    try std.testing.expectEqual(@as(u16, 2024), d.year);
+    try std.testing.expectEqual(@as(u8, 29), d.day);
+    try std.testing.expectEqual(@as(u32, 123456), dt.microsecond);
+    try std.testing.expect(duration.negative);
+    try std.testing.expectEqual(@as(u16, 837), duration.hours);
+    text.deinit();
+
+    var statement = try conn.prepare(io, "SELECT d, dt, t FROM zig_temporal_test WHERE d = ?");
+    defer conn.closeStatement(io, &statement) catch {};
+    var binary = try conn.execute(io, statement, &.{.{ .text = "2024-02-29" }});
+    const b = binary.value.rows.items[0];
+    try std.testing.expectEqual(@as(u8, 10), binary.value.rows.columns[0].type_code);
+    try std.testing.expectEqual(@as(u8, 12), binary.value.rows.columns[1].type_code);
+    try std.testing.expectEqual(@as(u8, 11), binary.value.rows.columns[2].type_code);
+    _ = try mysql.Temporal.parseDate(b.values[0].?);
+    const bdt = try mysql.Temporal.parseDateTime(b.values[1].?);
+    try std.testing.expectEqual(@as(u32, 123456), bdt.microsecond);
+    const bt = try mysql.Temporal.parseTime(b.values[2].?);
+    try std.testing.expectEqual(@as(u32, 999999), bt.microsecond);
+    binary.deinit();
+}
