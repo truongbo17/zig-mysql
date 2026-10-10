@@ -283,7 +283,18 @@ pub const Pool = struct {
                 self.mutex.lockUncancelable(io);
                 self.connect_failures += 1;
                 self.mutex.unlock(io);
-                if (err == error.Canceled or err == error.OutOfMemory) return err;
+                // Never mask an authentication, policy, certificate or local
+                // configuration failure by silently trying another server.
+                // Only connection/transport establishment failures may fall
+                // through to a different endpoint.
+                if (err == error.Canceled or err == error.OutOfMemory or
+                    err == error.ServerError or err == error.InvalidConfiguration or
+                    err == error.UnsupportedAuthentication or err == error.SecureTransportRequired or
+                    err == error.InvalidTlsHost or err == error.TlsCertificateInvalid or
+                    err == error.TlsCertificateMissing or err == error.TlsCaLoadFailed or
+                    err == error.TlsHostFailed or err == error.TlsHandshakeFailed or
+                    err == error.TlsUnsupported or err == error.UnsupportedTlsPlatform)
+                    return err;
                 if (index == self.config.failover_addresses.len) return err;
             }
         }
