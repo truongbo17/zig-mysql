@@ -21,14 +21,14 @@ mandatory before production acceptance.
 - **Sprint E, compatibility (P3):** [#32 charsets/SQL modes](https://github.com/truongbo17/zig-mysql/issues/32), [#33 protocol fuzz/large payloads](https://github.com/truongbo17/zig-mysql/issues/33), [#34 IPv6/Windows](https://github.com/truongbo17/zig-mysql/issues/34).
 - **Parallel, production gates (not passed):** [epic #13](https://github.com/truongbo17/zig-mysql/issues/13): [#35 staging setup](https://github.com/truongbo17/zig-mysql/issues/35) → [#36 real 24h soak](https://github.com/truongbo17/zig-mysql/issues/36); [#37 workload and HA/security](https://github.com/truongbo17/zig-mysql/issues/37); [#38 trusted release provenance](https://github.com/truongbo17/zig-mysql/issues/38).
 
-Start with the first **open** dependency; A4 [#18](https://github.com/truongbo17/zig-mysql/issues/18) is DONE via [PR #44](https://github.com/truongbo17/zig-mysql/pull/44), while prepared binary scanning [#19](https://github.com/truongbo17/zig-mysql/issues/19) is still planned. Previously completed items remain tracked for history. Size each feature PR so tests, docs and a code review can complete independently. Avoid bundling Sprint A type changes and unrelated operational changes into one PR.
+**Sprint A complete:** type fidelity epic [#10](https://github.com/truongbo17/zig-mysql/issues/10) and typed scanner epic [#11](https://github.com/truongbo17/zig-mysql/issues/11) are CLOSED, along with their six children #14–#19. Completion evidence: [PR #40](https://github.com/truongbo17/zig-mysql/pull/40), [#41](https://github.com/truongbo17/zig-mysql/pull/41), [#42](https://github.com/truongbo17/zig-mysql/pull/42), [#47](https://github.com/truongbo17/zig-mysql/pull/47), [#49](https://github.com/truongbo17/zig-mysql/pull/49), [#44](https://github.com/truongbo17/zig-mysql/pull/44), [#50](https://github.com/truongbo17/zig-mysql/pull/50). Final Zig 0.16 and 0.17 exact-head integration [CI #38069102868](https://github.com/truongbo17/zig-mysql/actions/runs/38069102868) PASS, including MySQL and MariaDB. This does not close production gate #13. **Next implement Sprint B #20**, then #21/#22 once safe multi-result framing is proven.
 
 ## Ranked feature backlog
 
 | Priority | Feature | Business value | Acceptance evidence |
 | --- | --- | --- | --- |
-| P0 / next | Typed SQL values: lossless DECIMAL, DATE/TIME/DATETIME/TIMESTAMP, JSON, BLOB and nullable types | Financial and business data correctness | Round-trip native prepared binding and decoding on MySQL/MariaDB, monetary precision and timezone boundary tests |
-| P0 / next | Typed row scanning API, preserving existing raw-row API | Safe ergonomic Go-like scanning in Zig | Explicit NULL/type mismatch/overflow behavior and documented ownership across Zig versions |
+| P0 / DONE | Typed SQL values: lossless DECIMAL, DATE/TIME/DATETIME/TIMESTAMP, JSON, BLOB and nullable types | Financial and business data correctness | Round-trip native prepared binding and decoding on MySQL/MariaDB, monetary precision and timezone boundary tests |
+| P0 / DONE | Typed row scanning API, preserving existing raw-row API | Safe ergonomic Go-like scanning in Zig | Explicit NULL/type mismatch/overflow behavior and documented ownership across Zig versions |
 | P1 | Multi-resultsets and stored procedure response framing | Correct stored procedure and multi-result support | CALL, multiple OK/rows, later-result error, safe drain, malformed framing tests |
 | P1 | Streaming prepared/binary resultsets | Support very large prepared SELECT with bounded memory | 100k+ rows, huge BLOB, per-row deadline and mid-stream disconnect with pool eviction |
 | P1 | Transaction helpers and savepoints | Safer business transaction composition | Timeout-bounded COMMIT/ROLLBACK, savepoint lifecycle, ambiguous commit never retried |
@@ -40,7 +40,7 @@ Start with the first **open** dependency; A4 [#18](https://github.com/truongbo17
 
 ## Delivery order
 
-### Sprint A — Type fidelity first
+### Sprint A — Type fidelity delivered (completed)
 Audit current prepared Param, binary decode, text result parsing and column
 metadata. Add opt-in Zig types and lossless decoding for decimal, time and
 binary data. Real fixtures: Vietnamese UTF-8, NULL, zero bytes, large JSON,
