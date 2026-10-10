@@ -432,7 +432,7 @@ and [#11 typed scanner](https://github.com/truongbo17/zig-mysql/issues/11).
 | A0 | [#14 Audit type codes, parsers and row ownership](https://github.com/truongbo17/zig-mysql/issues/14) | — completed | Done — [PR #40](https://github.com/truongbo17/zig-mysql/pull/40) |
 | A1 | [#15 Lossless DECIMAL/NEWDECIMAL](https://github.com/truongbo17/zig-mysql/issues/15) | #14 | Done — [PR #41](https://github.com/truongbo17/zig-mysql/pull/41) |
 | A2 | [#16 DATE/TIME/DATETIME/TIMESTAMP](https://github.com/truongbo17/zig-mysql/issues/16) | #14 | In progress — [PR #42](https://github.com/truongbo17/zig-mysql/pull/42) (read parsers; native binding pending) |
-| A3 | [#17 JSON/BLOB/UTF-8 byte safety](https://github.com/truongbo17/zig-mysql/issues/17) | #14 | Planned |
+| A3 | [#17 JSON/BLOB/UTF-8 byte safety](https://github.com/truongbo17/zig-mysql/issues/17) | #14 | Done — [PR #43](https://github.com/truongbo17/zig-mysql/pull/43) |
 | A4 | [#18 Typed scanner for text rows](https://github.com/truongbo17/zig-mysql/issues/18) | #14–#17 as applicable | Planned |
 | A5 | [#19 Typed scanner for prepared binary rows](https://github.com/truongbo17/zig-mysql/issues/19) | #18 + scalar types | Planned |
 
@@ -469,6 +469,18 @@ No timezone conversion is inferred (MySQL TIMESTAMP depends on server
 session timezone). The values are independent numeric structs, with
 no hidden allocations. Native typed prepared **input** binding is not
 implemented by this PR; issue #16 stays open until that follow-up is tested.
+
+### Byte-safe JSON/BLOB and UTF-8 values (A3)
+
+`mysql.SqlBytes.blob(bytes)` retains arbitrary raw bytes, including
+embedded NUL and invalid UTF-8. `SqlBytes.text(bytes)` validates UTF-8.
+`SqlBytes.json(allocator, bytes)` checks UTF-8 and JSON structure using
+a temporary std.json parse tree, then returns the **original bytes** (no
+normalization, encoding or ownership transfer). Views borrow the row bytes:
+copy them if they must outlive `Result.deinit` or the next streamed row.
+Use `Param.bytes` for opaque BLOB and `Param.text` for JSON after
+validation; the MySQL server may reformat JSON when storing its binary
+JSON type. This helper is opt-in; no raw Row behavior has changed.
 
 ### Sprint B — Correct resultset lifecycle and streaming (P1)
 
