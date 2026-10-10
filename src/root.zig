@@ -9,6 +9,7 @@ pub const Result = @import("client.zig").Result;
 pub const Param = @import("client.zig").Param;
 pub const Decimal = @import("decimal.zig").Decimal;
 pub const TextRow = @import("text_scan.zig").TextRow;
+pub const PreparedRow = @import("prepared_scan.zig").PreparedRow;
 pub const Temporal = @import("temporal.zig");
 pub const Statement = @import("client.zig").Statement;
 pub const RowStream = @import("client.zig").RowStream;
@@ -23,6 +24,7 @@ test {
     _ = @import("client.zig");
     _ = @import("decimal.zig");
     _ = @import("text_scan.zig");
+    _ = @import("prepared_scan.zig");
     _ = @import("temporal.zig");
     _ = @import("pool.zig");
 }
