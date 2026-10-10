@@ -16,11 +16,20 @@ PROC = pathlib.Path("/proc")
 
 
 def children(pid):
-    path = PROC / str(pid) / "task" / str(pid) / "children"
+    # Linux /proc/<tgid>/task/<tid>/children is thread-specific. Zig's
+    # parallel build worker may launch the test from a non-leader thread.
+    # Reading only task/<tgid>/children therefore misses the Zig test.
+    children_ids = set()
     try:
-        return [int(x) for x in path.read_text().split()]
-    except (OSError, ValueError):
+        tasks = list((PROC / str(pid) / "task").iterdir())
+    except OSError:
         return []
+    for task in tasks:
+        try:
+            children_ids.update(int(x) for x in (task / "children").read_text().split())
+        except (OSError, ValueError):
+            continue
+    return list(children_ids)
 
 
 def test_descendants(pid):
@@ -32,7 +41,8 @@ def test_descendants(pid):
             cmd = (PROC / str(child) / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
         except OSError:
             continue
-        if "/test " in cmd or cmd.rstrip().endswith("/test"):
+        binary = cmd.split(" ", 1)[0].strip()
+        if binary.endswith("/test") or "/test " in cmd:
             yield child
 
 
