@@ -88,7 +88,14 @@ def main():
             proc.wait()
         raise
 
+    # Pin the evidence to the exact checked-out source revision. This value
+    # must be compared against a trusted expected SHA by the release gate.
+    sha_result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True)
+    git_sha = sha_result.stdout.strip() if sha_result.returncode == 0 else None
+
     summary = {
+        "git_sha": git_sha,
+        "sample_span_seconds": round(samples[-1][0] - samples[0][0], 3) if len(samples) >= 2 else 0,
         "requested_seconds": requested,
         "wall_seconds": round(time.monotonic() - start, 3),
         "exit_code": returncode,
