@@ -385,3 +385,69 @@ test "streaming row deadline cancels a multi-packet row and evicts its connectio
     healthy.deinit();
     pool.release(io, fresh);
 }
+
+test "pool connects to healthy fallback when primary connection is unavailable" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var pool = try mysql.Pool.init(std.testing.allocator, .{
+        .connection = .{
+            .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33399") },
+            .username = "zigtest",
+            .password = "zig_mysql_test",
+            .database = "zigtest",
+        },
+        .failover_addresses = &.{
+            .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33398") },
+            .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        },
+        .connect_attempt_timeout = .fromMilliseconds(400),
+        .max_open = 1,
+        .max_idle = 1,
+    });
+    defer pool.deinit(io);
+
+    const connection = try pool.acquireWithTimeout(io, .fromSeconds(4));
+    var result = try connection.queryWithTimeout(io, "SELECT DATABASE()", .fromSeconds(2));
+    try std.testing.expectEqualStrings("zigtest", result.value.rows.items[0].values[0].?);
+    result.deinit();
+    pool.release(io, connection);
+
+    const stats = pool.stats(io);
+    try std.testing.expectEqual(@as(usize, 2), stats.failover_attempts);
+    try std.testing.expectEqual(@as(usize, 1), stats.failover_successes);
+    try std.testing.expectEqual(@as(usize, 2), stats.connect_failures);
+    try std.testing.expectEqual(@as(usize, 1), stats.connections_created);
+    try std.testing.expectEqual(@as(usize, 0), stats.in_use);
+}
+
+test "pool never succeeds when all failover endpoints are unavailable" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var pool = try mysql.Pool.init(std.testing.allocator, .{
+        .connection = .{
+            .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33399") },
+            .username = "zigtest",
+            .password = "zig_mysql_test",
+        },
+        .failover_addresses = &.{
+            .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33398") },
+        },
+        .connect_attempt_timeout = .fromMilliseconds(300),
+        .max_open = 1,
+        .max_idle = 0,
+    });
+    defer pool.deinit(io);
+
+    _ = pool.acquireWithTimeout(io, .fromSeconds(3)) catch {
+        const stats = pool.stats(io);
+        try std.testing.expectEqual(@as(usize, 0), stats.open);
+        try std.testing.expectEqual(@as(usize, 0), stats.in_use);
+        try std.testing.expectEqual(@as(usize, 1), stats.failover_attempts);
+        try std.testing.expectEqual(@as(usize, 0), stats.failover_successes);
+        try std.testing.expectEqual(@as(usize, 2), stats.connect_failures);
+        return;
+    };
+    return error.UnexpectedSuccessfulConnection;
+}
