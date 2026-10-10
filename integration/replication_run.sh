@@ -71,6 +71,39 @@ sql "$replica" "SET GLOBAL read_only=ON; SET GLOBAL super_read_only=ON;"
 echo "Real MySQL replication before promotion: replica is read-only"
 REPLICATION_PHASE=before zig build replication-integration
 
+# Simulate a source/replica partition without stopping the writer. The source
+# remains writable via docker exec and deliberately commits a transaction the
+# replica cannot have received. PROMOTION AT THIS POINT WOULD LOSE DATA.
+docker network disconnect -f "$network" "$primary"
+sql "$primary" "INSERT INTO zigtest.failover_probe VALUES(3,'isolated-primary');"
+sleep 2
+if [[ "$(sql "$replica" "SELECT COUNT(*) FROM zigtest.failover_probe WHERE id=3" 2>/dev/null || :)" != "0" ]]; then
+  echo "Partition fixture failed: isolated source write appeared on replica" >&2
+  exit 1
+fi
+echo "Real MySQL network partition: source accepts isolated write, replica stays read-only"
+REPLICATION_PHASE=partition zig build replication-integration
+
+# Repair connectivity and wait for the missing committed write to replicate.
+# Never promote while the replica is behind. Restart the replica IO thread
+# after reattaching to avoid the server's long reconnect backoff.
+docker network connect "$network" "$primary"
+sql "$replica" "STOP REPLICA; START REPLICA;"
+caught_up=0
+for _ in $(seq 1 90); do
+  if [[ "$(sql "$replica" "SELECT COUNT(*) FROM zigtest.failover_probe WHERE id=3" 2>/dev/null || :)" == "1" ]]; then
+    caught_up=1
+    break
+  fi
+  sleep 1
+done
+if [[ "$caught_up" != "1" ]]; then
+  sql "$replica" "SHOW REPLICA STATUS\\G" >&2 || true
+  echo "Replica did not catch up after network healing; refusing promotion" >&2
+  exit 1
+fi
+echo "Network healed: isolated transaction replicated before promotion"
+
 # No connection is allowed to the former primary after it is stopped.
 # Explicit, *manual* promotion after replication caught up.
 docker stop "$primary" >/dev/null
