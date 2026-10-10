@@ -77,7 +77,7 @@ test "one-process long-lived pool soak: slot accounting remains bounded" {
         try std.testing.expectEqual(@as(usize, 0), stats.in_use);
         try std.testing.expectEqual(stats.connections_created - stats.connections_closed, stats.open);
         if (rounds % 10 == 0) {
-            std.debug.print("SOAK progress rounds={d}, requests={d}, open={d}, idle={d}, waits={d}, reset_failures={d}\\n",
+            std.debug.print("SOAK progress rounds={d}, requests={d}, open={d}, idle={d}, waits={d}, reset_failures={d}\n",
                 .{ rounds, rounds * 1280, stats.open, stats.idle, stats.waits, stats.reset_failures });
         }
     }
@@ -85,6 +85,6 @@ test "one-process long-lived pool soak: slot accounting remains bounded" {
     try std.testing.expectEqual(@as(usize, 0), stats.reset_failures);
     try std.testing.expectEqual(@as(usize, 0), stats.connect_failures);
     try std.testing.expectEqual(@as(usize, 0), stats.acquire_timeouts);
-    std.debug.print("SOAK COMPLETE rounds={d}, requests={d}, seconds_requested={d}, open={d}, idle={d}, closed={d}\\n",
+    std.debug.print("SOAK COMPLETE rounds={d}, requests={d}, seconds_requested={d}, open={d}, idle={d}, closed={d}\n",
         .{ rounds, rounds * 1280, seconds, stats.open, stats.idle, stats.connections_closed });
 }
