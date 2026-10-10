@@ -1,6 +1,7 @@
 const std = @import("std");
 const protocol = @import("protocol.zig");
 const auth = @import("auth.zig");
+const temporal = @import("temporal.zig");
 const Wire = @import("wire.zig").Wire;
 
 const client_protocol_41: u32 = 1 << 9;
@@ -69,6 +70,12 @@ pub const Param = union(enum) {
     /// Exact DECIMAL ASCII, validated prior to writing any packet.
     /// MySQL accepts this as VAR_STRING and casts according to SQL context.
     decimal: []const u8,
+    /// MySQL native binary DATE / DATETIME / TIME / TIMESTAMP binds.
+    date: temporal.Date,
+    datetime: temporal.DateTime,
+    time: temporal.Time,
+    /// MySQL converts TIMESTAMP according to session time_zone.
+    timestamp: temporal.DateTime,
     bytes: []const u8,
     boolean: bool,
 };
@@ -509,6 +516,9 @@ pub const Client = struct {
         // malformed local input cannot desynchronize a healthy connection.
         for (params) |p| switch (p) {
             .decimal => |value| _ = try @import("decimal.zig").Decimal.parse(value),
+            .date => |value| try temporal.validateDate(value),
+            .datetime, .timestamp => |value| try temporal.validateDateTime(value),
+            .time => |value| try temporal.validateTime(value),
             else => {},
         };
         self.wire.reset();
@@ -531,6 +541,10 @@ pub const Client = struct {
                     .uint => .{ 8, 0x80 },
                     .float => .{ 5, 0 },
                     .text, .decimal => .{ 253, 0 },
+                    .date => .{ 10, 0 },
+                    .datetime => .{ 12, 0 },
+                    .time => .{ 11, 0 },
+                    .timestamp => .{ 7, 0 },
                     .bytes => .{ 252, 0 },
                     .boolean => .{ 1, 0 },
                 };
@@ -543,6 +557,33 @@ pub const Client = struct {
                 .uint => |v| try appendInt(&payload, self.allocator, v, 8),
                 .float => |v| try appendInt(&payload, self.allocator, @bitCast(v), 8),
                 .text, .decimal, .bytes => |v| try appendLenString(&payload, self.allocator, v),
+                .date => |v| {
+                    try payload.append(self.allocator, 4);
+                    try appendInt(&payload, self.allocator, v.year, 2);
+                    try payload.append(self.allocator, v.month);
+                    try payload.append(self.allocator, v.day);
+                },
+                .datetime, .timestamp => |v| {
+                    try payload.append(self.allocator, if (v.microsecond == 0) 7 else 11);
+                    try appendInt(&payload, self.allocator, v.date.year, 2);
+                    try payload.append(self.allocator, v.date.month);
+                    try payload.append(self.allocator, v.date.day);
+                    try payload.append(self.allocator, v.hour);
+                    try payload.append(self.allocator, v.minute);
+                    try payload.append(self.allocator, v.second);
+                    if (v.microsecond != 0)
+                        try appendInt(&payload, self.allocator, v.microsecond, 4);
+                },
+                .time => |v| {
+                    try payload.append(self.allocator, if (v.microsecond == 0) 8 else 12);
+                    try payload.append(self.allocator, if (v.negative) 1 else 0);
+                    try appendInt(&payload, self.allocator, v.hours / 24, 4);
+                    try payload.append(self.allocator, @intCast(v.hours % 24));
+                    try payload.append(self.allocator, v.minutes);
+                    try payload.append(self.allocator, v.seconds);
+                    if (v.microsecond != 0)
+                        try appendInt(&payload, self.allocator, v.microsecond, 4);
+                },
                 .boolean => |v| try payload.append(self.allocator, if (v) 1 else 0),
             };
         }
