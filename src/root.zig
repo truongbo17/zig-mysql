@@ -7,6 +7,7 @@ pub const Address = @import("client.zig").Address;
 pub const TlsConfig = @import("client.zig").TlsConfig;
 pub const Result = @import("client.zig").Result;
 pub const Param = @import("client.zig").Param;
+pub const Decimal = @import("decimal.zig").Decimal;
 pub const Statement = @import("client.zig").Statement;
 pub const RowStream = @import("client.zig").RowStream;
 pub const Pool = @import("pool.zig").Pool;
@@ -18,5 +19,6 @@ test {
     _ = auth;
     _ = wire;
     _ = @import("client.zig");
+    _ = @import("decimal.zig");
     _ = @import("pool.zig");
 }
