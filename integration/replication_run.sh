@@ -39,6 +39,11 @@ docker run --name "$replica" --network "$network" \
   --server-id=42 --log-bin=mysql-bin --relay-log=relay-bin >/dev/null
 wait_db "$primary"
 wait_db "$replica"
+# Use the same test-only MySQL 8.0 mysql_native_password fixture as the
+# baseline MySQL integration suite. Never send a full caching_sha2 password
+# over unencrypted TCP; production users should configure verified TLS.
+sql "$primary" "ALTER USER 'zigtest'@'%' IDENTIFIED WITH mysql_native_password BY 'zig_mysql_test';"
+sql "$replica" "ALTER USER 'zigtest'@'%' IDENTIFIED WITH mysql_native_password BY 'zig_mysql_test';"
 
 sql "$primary" "CREATE USER 'repl'@'%' IDENTIFIED WITH mysql_native_password BY 'zig_mysql_test'; GRANT REPLICATION SLAVE ON *.* TO 'repl'@'%';"
 read -r binlog pos _ < <(sql "$primary" "SHOW MASTER STATUS")
