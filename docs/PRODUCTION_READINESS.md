@@ -103,6 +103,32 @@ of a replicated cluster failover with replication lag, fencing or promotion.
 Network partition testing and failover drills on an actual replicated cluster
 remain gates to be signed off separately.
 
+## Replicated MySQL promotion drill and soak resource evidence
+
+An optional `PoolConfig.require_writable=true` checks
+`@@global.read_only=0` on every newly opened socket and idle checkout.
+A candidate still read-only is closed rather than handed to a write-capable
+application. This is **not** atomic fencing: leadership can change after
+checkout and before a SQL write. HA promotion/fencing must remain external.
+
+`integration/replication_run.sh` now provisions a **real** MySQL 8.0
+primary and replica via binary-log file/position replication in two isolated
+Docker instances. The drill verifies replication of a marker, rejects the
+read-only replica, stops the original primary, manually detaches and promotes
+the replica, then verifies existing replicated data and a new write through
+an ordered fallback pool. This is stronger evidence than an unreachable-port
+test, but it does **not** establish safe automatic election, semi-sync
+durability, quorum fencing, replication lag SLO or partition behavior.
+
+Linux `integration/soak.sh` now invokes `integration/soak_monitor.py` to
+sample RSS and open file descriptors of the inner **single Zig test process**
+from /proc. Inspect `SOAK_RESOURCE_SUMMARY` in CI. A short 12-second
+smoke cannot prove the 24-hour RSS stability gate. For staging:
+`SOAK_METRICS_PATH=/tmp/soak.json SOAK_MAX_RSS_KB=<budget>
+SOAK_MAX_FDS=<budget> bash integration/soak.sh 86400`.
+Set budgets based on expected application workload and representative
+hardware; capture baseline, peak and final RSS/FDs, plus actual alerts.
+
 ## Release decision
 
 The test matrix establishes an evidence-backed **staging-ready beta**, not a
