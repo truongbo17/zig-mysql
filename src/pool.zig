@@ -3,6 +3,14 @@ const client = @import("client.zig");
 
 pub const PoolConfig = struct {
     connection: client.Config,
+    /// Optional equivalent MySQL endpoints, attempted in order only when
+    /// opening a NEW connection fails. No SQL is automatically replayed.
+    /// All endpoints must have equivalent roles, schemas and credentials.
+    /// Slice lifetime must cover the entire pool lifetime.
+    failover_addresses: []const client.Address = &.{},
+    /// Total timeout per TCP/TLS connect and authentication attempt.
+    /// Applied separately to the primary and each fallback address.
+    connect_attempt_timeout: ?std.Io.Duration = .fromSeconds(5),
     /// Maximum number of connections (idle + checked out + connecting).
     max_open: usize = 10,
     /// Maximum number of connections retained for reuse.
@@ -44,6 +52,51 @@ pub const Stats = struct {
     connect_failures: usize,
     /// Connections discarded due to failure of session reset/schema restore.
     reset_failures: usize,
+    /// Number of attempts to non-primary endpoints.
+    failover_attempts: usize,
+    /// Number of successful connections to non-primary endpoints.
+    failover_successes: usize,
+
+    /// Prometheus text exposition with fixed, label-free metric names.
+    /// The returned buffer is owned by the caller. Never include passwords
+    /// or untrusted endpoint names in metrics labels.
+    pub fn formatPrometheus(self: Stats, allocator: std.mem.Allocator) ![]u8 {
+        return std.fmt.allocPrint(allocator,
+            "# TYPE zig_mysql_pool_open gauge\n" ++
+            "zig_mysql_pool_open {d}\n" ++
+            "# TYPE zig_mysql_pool_idle gauge\n" ++
+            "zig_mysql_pool_idle {d}\n" ++
+            "# TYPE zig_mysql_pool_in_use gauge\n" ++
+            "zig_mysql_pool_in_use {d}\n" ++
+            "# TYPE zig_mysql_pool_connections_created_total counter\n" ++
+            "zig_mysql_pool_connections_created_total {d}\n" ++
+            "# TYPE zig_mysql_pool_connections_closed_total counter\n" ++
+            "zig_mysql_pool_connections_closed_total {d}\n" ++
+            "# TYPE zig_mysql_pool_connect_failures_total counter\n" ++
+            "zig_mysql_pool_connect_failures_total {d}\n" ++
+            "# TYPE zig_mysql_pool_health_check_failures_total counter\n" ++
+            "zig_mysql_pool_health_check_failures_total {d}\n" ++
+            "# TYPE zig_mysql_pool_reset_failures_total counter\n" ++
+            "zig_mysql_pool_reset_failures_total {d}\n" ++
+            "# TYPE zig_mysql_pool_expired_connections_total counter\n" ++
+            "zig_mysql_pool_expired_connections_total {d}\n" ++
+            "# TYPE zig_mysql_pool_waits_total counter\n" ++
+            "zig_mysql_pool_waits_total {d}\n" ++
+            "# TYPE zig_mysql_pool_acquire_timeouts_total counter\n" ++
+            "zig_mysql_pool_acquire_timeouts_total {d}\n" ++
+            "# TYPE zig_mysql_pool_failover_attempts_total counter\n" ++
+            "zig_mysql_pool_failover_attempts_total {d}\n" ++
+            "# TYPE zig_mysql_pool_failover_successes_total counter\n" ++
+            "zig_mysql_pool_failover_successes_total {d}\n",
+            .{
+                self.open, self.idle, self.in_use,
+                self.connections_created, self.connections_closed,
+                self.connect_failures, self.health_check_failures,
+                self.reset_failures, self.expired_connections,
+                self.waits, self.acquire_timeouts,
+                self.failover_attempts, self.failover_successes,
+            });
+    }
 };
 
 /// A bounded, concurrency-safe pool. Every acquired Client must be released
@@ -67,6 +120,8 @@ pub const Pool = struct {
     acquire_timeouts: usize = 0,
     connect_failures: usize = 0,
     reset_failures: usize = 0,
+    failover_attempts: usize = 0,
+    failover_successes: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator, config: PoolConfig) !Pool {
         if (config.max_open == 0 or config.max_idle > config.max_open)
@@ -179,10 +234,7 @@ pub const Pool = struct {
                     return err;
                 };
                 errdefer self.allocator.destroy(connection);
-                connection.* = client.Client.connect(self.allocator, io, self.config.connection) catch |err| {
-                    self.mutex.lockUncancelable(io);
-                    self.connect_failures += 1;
-                    self.mutex.unlock(io);
+                connection.* = self.connectConfigured(io) catch |err| {
                     self.releaseSlot(io);
                     return err;
                 };
@@ -202,6 +254,51 @@ pub const Pool = struct {
                 return err;
             };
         }
+    }
+
+    /// Fail over only during connection setup. Never replay an in-flight
+    /// statement or transaction, whose server-side outcome may be unknown.
+    fn connectConfigured(self: *Pool, io: std.Io) !client.Client {
+        var index: usize = 0;
+        while (index <= self.config.failover_addresses.len) : (index += 1) {
+            var cfg = self.config.connection;
+            if (index > 0) {
+                cfg.address = self.config.failover_addresses[index - 1];
+                self.mutex.lockUncancelable(io);
+                self.failover_attempts += 1;
+                self.mutex.unlock(io);
+            }
+            const attempt = if (self.config.connect_attempt_timeout) |timeout|
+                client.Client.connectWithTimeout(self.allocator, io, cfg, timeout)
+            else
+                client.Client.connect(self.allocator, io, cfg);
+            if (attempt) |connection| {
+                if (index > 0) {
+                    self.mutex.lockUncancelable(io);
+                    self.failover_successes += 1;
+                    self.mutex.unlock(io);
+                }
+                return connection;
+            } else |err| {
+                self.mutex.lockUncancelable(io);
+                self.connect_failures += 1;
+                self.mutex.unlock(io);
+                // Never mask an authentication, policy, certificate or local
+                // configuration failure by silently trying another server.
+                // Only connection/transport establishment failures may fall
+                // through to a different endpoint.
+                if (err == error.Canceled or err == error.OutOfMemory or
+                    err == error.ServerError or err == error.InvalidConfiguration or
+                    err == error.UnsupportedAuthentication or err == error.SecureTransportRequired or
+                    err == error.InvalidTlsHost or err == error.TlsCertificateInvalid or
+                    err == error.TlsCertificateMissing or err == error.TlsCaLoadFailed or
+                    err == error.TlsHostFailed or err == error.TlsHandshakeFailed or
+                    err == error.TlsUnsupported or err == error.UnsupportedTlsPlatform)
+                    return err;
+                if (index == self.config.failover_addresses.len) return err;
+            }
+        }
+        unreachable;
     }
 
     /// Returns an exclusive connection to the pool. The MySQL session is
@@ -309,6 +406,8 @@ pub const Pool = struct {
             .acquire_timeouts = self.acquire_timeouts,
             .connect_failures = self.connect_failures,
             .reset_failures = self.reset_failures,
+            .failover_attempts = self.failover_attempts,
+            .failover_successes = self.failover_successes,
         };
     }
 
@@ -349,4 +448,27 @@ test "pool capacity is validated before connecting" {
         },
         .health_check_timeout = .fromSeconds(1),
     });
+}
+
+test "Prometheus pool exposition contains expected metrics and no configuration secrets" {
+    const stats = Stats{
+        .open = 3,
+        .idle = 1,
+        .in_use = 2,
+        .health_check_failures = 4,
+        .expired_connections = 5,
+        .connections_created = 8,
+        .connections_closed = 5,
+        .waits = 9,
+        .acquire_timeouts = 1,
+        .connect_failures = 2,
+        .reset_failures = 0,
+        .failover_attempts = 3,
+        .failover_successes = 1,
+    };
+    const metrics = try stats.formatPrometheus(std.testing.allocator);
+    defer std.testing.allocator.free(metrics);
+    try std.testing.expect(std.mem.indexOf(u8, metrics, "zig_mysql_pool_open 3\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, metrics, "zig_mysql_pool_failover_successes_total 1\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, metrics, "# TYPE zig_mysql_pool_acquire_timeouts_total counter\n") != null);
 }

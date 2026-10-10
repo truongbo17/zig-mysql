@@ -62,6 +62,18 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Benchmark pooled MySQL queries on localhost:33306");
     bench_step.dependOn(&run_bench.step);
 
+    const soak_module = b.createModule(.{
+        .root_source_file = b.path("integration/soak_local.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    soak_module.addImport("zig_mysql", module);
+    const soak_tests = b.addTest(.{ .root_module = soak_module });
+    const run_soak = b.addRunArtifact(soak_tests);
+    run_soak.has_side_effects = true; // Long-lived pool test must never be cached.
+    const soak_step = b.step("soak-integration", "Run single-process sustained pool soak (SOAK_SECONDS)");
+    soak_step.dependOn(&run_soak.step);
+
     const stress_module = b.createModule(.{
         .root_source_file = b.path("integration/stress.zig"),
         .target = target,

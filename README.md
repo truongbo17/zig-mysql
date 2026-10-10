@@ -260,16 +260,67 @@ adding a test does not imply that the implementation passed it. See
 [production readiness](docs/PRODUCTION_READINESS.md) for verified scope,
 remaining risks and prerequisites before deploying to production.
 
+## Ordered connection failover
+
+`PoolConfig.failover_addresses` allows ordered fallback **only when a new
+connection cannot be established**. Every connection attempt (primary and
+fallback) uses `connect_attempt_timeout`, which defaults to five seconds
+and includes authentication and TLS handshake. Each candidate address must
+lead to an equivalent, correctly configured MySQL node with the same role,
+database, permissions and expected TLS certificate identity.
+
+```zig
+var pool = try mysql.Pool.init(allocator, .{
+    .connection = .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("10.0.0.1:3306") },
+        .username = "app",
+        .password = password,
+        .database = "app_db",
+        .tls = .{ .host = "mysql.internal", .ca_file = "/etc/mysql-ca.pem" },
+    },
+    .failover_addresses = &.{
+        .{ .ip = try std.Io.net.IpAddress.parseLiteral("10.0.0.2:3306") },
+    },
+    .connect_attempt_timeout = .fromSeconds(3),
+    .max_open = 10,
+    .max_idle = 10,
+});
+defer pool.deinit(io);
+```
+
+**This is connection-establishment failover, not transparent query failover.**
+Authentication denial, incompatible security policy, invalid TLS certificates,
+and invalid client configuration fail closed: they are not treated as a reason
+to try alternate endpoints. Only transport/connection setup failures trigger
+ordered fallback. The pool does not re-run SQL commands, resume transactions, detect replication
+lag or guarantee that a failed write was not committed. If an existing
+connection dies during a transaction, return/discard it and let application
+transaction and idempotency policy decide whether the operation may be retried.
+Idle sockets remain bound to their connected server until evicted; fallback
+will be considered only for new connections. Do not configure read-only
+replicas as failover targets for a write-capable pool.
+
 ## Operational pool telemetry
 
-`pool.stats(io)` returns a consistent, mutex-protected snapshot with current
-`open`, `idle`, `in_use`, plus cumulative:
+`pool.stats(io)` returns a consistent, mutex-protected snapshot of
+`open`, `idle`, `in_use`, plus cumulative counters:
 `health_check_failures`, `expired_connections`, `connections_created`,
 `connections_closed`, `waits`, `acquire_timeouts`,
-`connect_failures`, and `reset_failures`. Export these through your
-service metrics registry and alert on increasing acquire timeout, stale
-session, reset failure and reconnect rates. These are process-local counters
-and reset on process restart; no Prometheus exporter is bundled.
+`connect_failures`, `reset_failures`, `failover_attempts`, and
+`failover_successes`. The built-in, label-free Prometheus text formatter
+can be used in your application's existing metrics HTTP endpoint:
+
+```zig
+const snapshot = pool.stats(io);
+const metrics = try snapshot.formatPrometheus(allocator);
+defer allocator.free(metrics);
+// Send metrics bytes in your existing /metrics handler.
+```
+
+The library does not start an HTTP listener or configure scraping/alerts.
+Counters are process-local and reset on restart. Monitor error/timeout
+**rates**, pool saturation and stale-session evictions; avoid logging database
+credentials or exposing user-controlled strings as metrics labels.
 
 ## Fault-injection and soak testing
 
@@ -277,11 +328,14 @@ and reset on process restart; no Prometheus exporter is bundled.
 exercises tests, benchmarks, and a brief repeated stress smoke. It also uses
 two Python loopback fixtures to simulate silent MySQL greeting and stalled
 TLS ServerHello, and restarts the MySQL 8.0 container to exercise
-reconnection. The soak helper `bash integration/soak.sh <seconds>` repeats
-the 32-worker, max-open-8 workload with five forcibly killed sessions per
-iteration against a **running test MySQL** on port 33306. You can use
-`86400` seconds for a separate 24-hour staging acceptance run; short CI
-runs do **not** count as a completed 24-hour soak or memory-leak analysis.
+reconnection. The soak helper `bash integration/soak.sh <seconds>` now keeps **one Zig
+process and one pool** alive across the entire run. It repeatedly drives 16
+borrowers against eight pooled connections, checks counters after every
+round, and logs completed operations. `bash integration/soak.sh 86400` runs
+a 24-hour acceptance workload against a **running test MySQL** on port 33306.
+CI executes a short smoke soak only; it does **not** prove 24-hour uptime,
+stable memory/RSS, or full network-partition/failover behavior. The independent
+stress suite additionally uses 32 borrowers and injected KILL CONNECTIONs.
 
 ## Pool performance benchmark
 

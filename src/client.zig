@@ -145,13 +145,22 @@ pub const RowStream = struct {
             // Do not free row_arena until after the losing read is joined.
             while (select.cancel()) |_| {}
         }
-        try select.concurrent(.row, RowStream.next, .{ self, io });
+        select.concurrent(.row, RowStream.next, .{ self, io }) catch |err| {
+            self.client.broken = true;
+            return err;
+        };
         select.concurrent(.timer, std.Io.sleep, .{ io, timeout, .awake }) catch |err| {
             self.client.broken = true;
             return err;
         };
-        switch (try select.await()) {
-            .row => |response| return try response,
+        switch (select.await() catch |err| {
+            self.client.broken = true;
+            return err;
+        }) {
+            .row => |response| return response catch |err| {
+                if (err == error.Canceled) self.client.broken = true;
+                return err;
+            },
             .timer => |elapsed| {
                 self.client.broken = true;
                 try elapsed;
@@ -364,13 +373,22 @@ pub const Client = struct {
                 .timer => {},
             };
         }
-        try select.concurrent(.operation, work, args);
+        select.concurrent(.operation, work, args) catch |err| {
+            self.broken = true;
+            return err;
+        };
         select.concurrent(.timer, std.Io.sleep, .{ io, timeout, .awake }) catch |err| {
             self.broken = true;
             return err;
         };
-        switch (try select.await()) {
-            .operation => |response| return try response,
+        switch (select.await() catch |err| {
+            self.broken = true;
+            return err;
+        }) {
+            .operation => |response| return response catch |err| {
+                if (err == error.Canceled) self.broken = true;
+                return err;
+            },
             .timer => |elapsed| {
                 try elapsed;
                 // Even if MySQL completed on the server, a response may still
