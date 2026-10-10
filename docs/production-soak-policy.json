@@ -4,5 +4,6 @@
   "maximum_rss_peak_kb": 524288,
   "maximum_fd_peak": 256,
   "maximum_rss_growth_kb": 65536,
-  "maximum_fd_growth": 8
+  "maximum_fd_growth": 8,
+  "minimum_completed_operations": 1000000
 }
