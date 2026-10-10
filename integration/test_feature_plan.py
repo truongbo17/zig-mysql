@@ -26,6 +26,28 @@ class RoadmapCoverageTests(unittest.TestCase):
         missing = EXPECTED_ISSUE_IDS - issue_refs("docs/FEATURE_ROADMAP.md")
         self.assertFalse(missing, f"Feature roadmap links missing: {sorted(missing)}")
 
+    def test_sprint_a_all_six_issues_have_delivered_prs(self):
+        readme = (REPO / "README.md").read_text()
+        section = readme.split("### Sprint A —", 1)[1].split("### Sprint B —", 1)[0]
+        self.assertIn("(P0, COMPLETE)", readme)
+        for item in range(14, 20):
+            rows = [line for line in section.splitlines()
+                    if line.startswith("| A") and f"/issues/{item})" in line]
+            self.assertEqual(len(rows), 1, f"expected exactly one Sprint A row for #{item}")
+            self.assertIn("Done", rows[0])
+            self.assertIn("/pull/", rows[0])
+            self.assertNotIn("Planned", rows[0])
+            self.assertNotIn("In progress", rows[0])
+        self.assertIn("Sprint B starts at [#20", readme)
+        self.assertIn("24-hour soak", readme)
+        self.assertIn("NOT yet passed", readme)
+
+    def test_roadmap_agrees_that_sprint_a_is_delivered(self):
+        roadmap = (REPO / "docs/FEATURE_ROADMAP.md").read_text()
+        self.assertIn("**Sprint A complete:**", roadmap)
+        self.assertIn("Sprint B #20", roadmap)
+        self.assertIn("does not close production gate #13", roadmap)
+
     def test_plan_and_gate_are_explicit(self):
         readme = (REPO / "README.md").read_text()
         self.assertIn("## Feature plan and issue tracker", readme)
