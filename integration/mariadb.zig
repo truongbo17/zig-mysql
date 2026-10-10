@@ -258,3 +258,55 @@ test "MariaDB JSON and BLOB preserve explicit byte and UTF8 semantics" {
     try std.testing.expectEqualStrings("42", json_result.value.rows.items[0].values[1].?);
     json_result.deinit();
 }
+
+test "MariaDB typed prepared binary result scanner keeps SQL types, unsignedness and NULL" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33308") },
+        .username = "zigtest", .password = "zig_mysql_test", .database = "zigtest",
+    });
+    defer conn.deinit(io);
+    var created = try conn.query(io,
+        "CREATE TEMPORARY TABLE zig_prepared_scan (id INT PRIMARY KEY, signed_value BIGINT, unsigned_value BIGINT UNSIGNED, amount DECIMAL(12,4), d DATE, dt DATETIME(6), duration TIME(6), payload BLOB, note VARCHAR(32), maybe BIGINT)");
+    created.deinit();
+    var ins = try conn.prepare(io,
+        "INSERT INTO zig_prepared_scan VALUES(1,?,?,?,?,?,?,?,?,?)");
+    defer conn.closeStatement(io, &ins) catch {};
+    const raw = &[_]u8{ 0, 0xff, 0x80, 42 };
+    var inserted = try conn.execute(io, ins, &.{
+        .{ .int = -42 }, .{ .uint = std.math.maxInt(u64) },
+        .{ .decimal = "123456.4500" }, .{ .text = "2024-02-29" },
+        .{ .text = "2024-02-29 12:34:56.000012" }, .{ .text = "-837:12:11.001002" },
+        .{ .bytes = raw }, .{ .text = "Việt Nam" }, .null,
+    });
+    inserted.deinit();
+    var stmt = try conn.prepare(io,
+        "SELECT signed_value, unsigned_value, amount, d, dt, duration, payload, note, maybe FROM zig_prepared_scan WHERE id=?");
+    defer conn.closeStatement(io, &stmt) catch {};
+    var res = try conn.execute(io, stmt, &.{.{ .int = 1 }});
+    defer res.deinit();
+    const scanner = try mysql.PreparedRow.init(res.value.rows, 0);
+    try std.testing.expectEqual(@as(i64, -42), (try scanner.int(0)).?);
+    try std.testing.expectEqual(std.math.maxInt(u64), (try scanner.uint(1)).?);
+    try std.testing.expectError(error.ColumnTypeMismatch, scanner.int(1));
+    try std.testing.expectEqualStrings("123456.4500", (try scanner.exactDecimal(2)).?.bytes);
+    try std.testing.expectEqual(@as(u8, 29), (try scanner.date(3)).?.day);
+    try std.testing.expectEqual(@as(u32, 12), (try scanner.dateTime(4)).?.microsecond);
+    try std.testing.expect((try scanner.time(5)).?.negative);
+    try std.testing.expectEqualSlices(u8, raw, (try scanner.bytes(6)).?);
+    try std.testing.expectError(error.InvalidUtf8, scanner.string(6));
+    try std.testing.expectEqualStrings("Việt Nam", (try scanner.string(7)).?);
+    try std.testing.expect((try scanner.int(8)) == null);
+    try std.testing.expectError(error.RowOutOfRange, mysql.PreparedRow.init(res.value.rows, 1));
+
+    // A caller may not reuse a server prepared statement after resetting
+    // the session. New prepared statements on the same socket remain valid.
+    try conn.closeStatement(io, &stmt);
+    try conn.closeStatement(io, &ins);
+    try conn.resetConnection(io);
+    var ping = try conn.query(io, "SELECT 1");
+    defer ping.deinit();
+    try std.testing.expectEqualStrings("1", ping.value.rows.items[0].values[0].?);
+}
