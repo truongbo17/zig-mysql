@@ -94,6 +94,10 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
   docker rm -f "$name" >/dev/null
 done
 
+# Run a disposable binlog-replicated primary/replica drill, then manually
+# fence and promote the replica and verify the writer-only pool.
+timeout 300s bash integration/replication_run.sh
+
 # Independently validate the classic protocol against supported MariaDB
 # families. Use the upstream MariaDB image's own initialization variables.
 for mariadb_tag in "10.11" "11.4"; do

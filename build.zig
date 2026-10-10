@@ -86,6 +86,18 @@ pub fn build(b: *std.Build) void {
     const stress_step = b.step("stress-integration", "Run concurrent MySQL pool stress and killed-socket recovery tests");
     stress_step.dependOn(&run_stress.step);
 
+    const replication_module = b.createModule(.{
+        .root_source_file = b.path("integration/replication.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    replication_module.addImport("zig_mysql", module);
+    const replication_tests = b.addTest(.{ .root_module = replication_module });
+    const run_replication = b.addRunArtifact(replication_tests);
+    run_replication.has_side_effects = true;
+    const replication_step = b.step("replication-integration", "Test writer-only pool against real replicated MySQL cluster");
+    replication_step.dependOn(&run_replication.step);
+
     const mariadb_module = b.createModule(.{
         .root_source_file = b.path("integration/mariadb.zig"),
         .target = target,
