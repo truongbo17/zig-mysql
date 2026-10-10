@@ -149,6 +149,32 @@ helpers never enable LOCAL INFILE or implicitly decode a BLOB as text.
 Unit and live MySQL/MariaDB tests cover invalid UTF-8, embedded NUL and
 prepared BLOB/JSON roundtrips.
 
+## Typed prepared/binary row scanning (A5, issue #19)
+
+`mysql.PreparedRow.init(result.value.rows, row_index)` is an opt-in
+adapter for **COM_STMT_EXECUTE** buffered binary resultsets. It reuses the
+driver's already-decoded, result-owned byte slices, while checking MySQL
+column type metadata and the UNSIGNED flag **before** numeric, temporal
+and decimal conversion. `int`, `uint`, `boolean`, `exactDecimal`,
+`date`, `dateTime`, `time`, `string` and `bytes` return optional
+values; NULL remains NULL, wrong SQL type returns
+`error.ColumnTypeMismatch`, numeric overflow is rejected and invalid
+UTF-8 is rejected by `string`. `bytes` never alters BLOB values.
+
+```zig
+var result = try conn.execute(io, select_statement, &.{.{ .int = 1 }});
+defer result.deinit();
+const scan = try mysql.PreparedRow.init(result.value.rows, 0);
+const amount = (try scan.exactDecimal(0)).?;
+_ = amount.bytes; // exact borrowed digits; copy before result.deinit()
+```
+
+Unlike streaming text rows, a buffered prepared row is valid until
+`Result.deinit()`. This adapter is **not** a streaming binary result API
+(see issue #22); passing a text-query result is unsupported. Typed values
+retain the original session timezone for TIMESTAMP, and this layer never
+automatically retries SQL or changes charset.
+
 ## Connection pooling
 
 `Pool` limits the number of live MySQL connections and waits when all connections
