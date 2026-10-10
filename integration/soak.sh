@@ -11,4 +11,9 @@ fi
 
 # Allow enough time for the final 1280-operation wave and connection cleanup.
 # CI invokes this script under an independent timeout as well.
-SOAK_SECONDS="$duration" timeout "$((duration + 120))s" zig build soak-integration
+if [[ "$(uname -s)" == Linux ]]; then
+  timeout "$((duration + 120))s" python3 integration/soak_monitor.py "$duration"
+else
+  # Linux-specific /proc RSS/FD collection is unavailable on macOS.
+  SOAK_SECONDS="$duration" zig build soak-integration
+fi
