@@ -56,7 +56,7 @@ pub const PreparedRow = struct {
 
     pub fn uint(self: PreparedRow, index: usize) !?u64 {
         if (!try self.typed(index, &.{ 1, 2, 3, 8, 9, 13 })) return null;
-        if (self.columns[index].flags & 32 == 0) return error.ColumnTypeMismatch;
+        if ((self.columns[index].flags & 32) == 0) return error.ColumnTypeMismatch;
         return self.textScanner().uint(index);
     }
 
@@ -130,7 +130,7 @@ test "prepared scanner rejects malformed payloads and preserves scalar types" {
     try std.testing.expectEqual(@as(u32, 12), (try scanner.dateTime(2)).?.microsecond);
     try std.testing.expect((try scanner.time(3)).?.negative);
     try std.testing.expect((try scanner.int(4)) == null);
-    const short = [_]mysql.Row{.{ .values = &values[0..1] }};
+    const short = [_]mysql.Row{.{ .values = values[0..1] }};
     try std.testing.expectError(error.ColumnCountMismatch, PreparedRow.init(
         .{ .columns = &cols, .items = &short }, 0));
 }
