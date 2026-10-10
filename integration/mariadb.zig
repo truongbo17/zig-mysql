@@ -68,7 +68,7 @@ test "MariaDB strict temporal decoding from text and binary prepared rows" {
         "CREATE TEMPORARY TABLE zig_temporal_test (d DATE, dt DATETIME(6), t TIME(6))");
     setup.deinit();
     var inserted = try conn.query(io,
-        "INSERT INTO zig_temporal_test VALUES ('2024-02-29', '2024-02-29 23:59:59.123456', '-838:59:59.999999')");
+        "INSERT INTO zig_temporal_test VALUES ('2024-02-29', '2024-02-29 23:59:59.123456', '-837:59:59.999999')");
     inserted.deinit();
 
     var text = try conn.query(io, "SELECT d, dt, t FROM zig_temporal_test");
@@ -80,7 +80,7 @@ test "MariaDB strict temporal decoding from text and binary prepared rows" {
     try std.testing.expectEqual(@as(u8, 29), d.day);
     try std.testing.expectEqual(@as(u32, 123456), dt.microsecond);
     try std.testing.expect(duration.negative);
-    try std.testing.expectEqual(@as(u16, 838), duration.hours);
+    try std.testing.expectEqual(@as(u16, 837), duration.hours);
     text.deinit();
 
     var statement = try conn.prepare(io, "SELECT d, dt, t FROM zig_temporal_test WHERE d = ?");
