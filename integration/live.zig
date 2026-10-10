@@ -570,3 +570,48 @@ test "MySQL 8.0 strict temporal decoding from text and binary prepared rows" {
     try std.testing.expectEqual(@as(u32, 999999), bt.microsecond);
     binary.deinit();
 }
+
+test "MySQL 8.0 JSON and BLOB preserve explicit byte and UTF8 semantics" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest",
+        .password = "zig_mysql_test",
+        .database = "zigtest",
+    });
+    defer conn.deinit(io);
+    var create = try conn.query(io,
+        "CREATE TEMPORARY TABLE zig_bytes_roundtrip (id INT PRIMARY KEY, raw_data LONGBLOB, payload JSON)");
+    create.deinit();
+
+    const original = &[_]u8{ 0, 0xff, 0xfe, 0x61, 0, 0x80 };
+    const blob = mysql.SqlBytes.blob(original);
+    const payload = try mysql.SqlBytes.json(std.testing.allocator,
+        "{\"xin_chao\":\"Việt Nam\",\"n\":42}");
+    var stmt = try conn.prepare(io,
+        "INSERT INTO zig_bytes_roundtrip VALUES (1, ?, ?)");
+    defer conn.closeStatement(io, &stmt) catch {};
+    var inserted = try conn.execute(io, stmt,
+        &.{ .{ .bytes = blob.bytes }, .{ .text = payload.bytes } });
+    try std.testing.expectEqual(@as(u64, 1), inserted.value.ok.affected_rows);
+    inserted.deinit();
+
+    var select = try conn.prepare(io,
+        "SELECT raw_data FROM zig_bytes_roundtrip WHERE id=1");
+    defer conn.closeStatement(io, &select) catch {};
+    var binary = try conn.execute(io, select, &.{});
+    const returned = mysql.SqlBytes.blob(binary.value.rows.items[0].values[0].?);
+    try std.testing.expectEqualSlices(u8, original, returned.bytes);
+    try std.testing.expectError(error.InvalidUtf8, mysql.SqlBytes.text(returned.bytes));
+    binary.deinit();
+
+    var json_result = try conn.query(io,
+        "SELECT payload, JSON_EXTRACT(payload, '$.n') FROM zig_bytes_roundtrip");
+    const returned_json = try mysql.SqlBytes.json(std.testing.allocator,
+        json_result.value.rows.items[0].values[0].?);
+    try std.testing.expectEqual(mysql.SqlBytes.Kind.json, returned_json.kind);
+    try std.testing.expectEqualStrings("42", json_result.value.rows.items[0].values[1].?);
+    json_result.deinit();
+}
