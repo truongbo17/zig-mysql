@@ -56,6 +56,47 @@ pub const Stats = struct {
     failover_attempts: usize,
     /// Number of successful connections to non-primary endpoints.
     failover_successes: usize,
+
+    /// Prometheus text exposition with fixed, label-free metric names.
+    /// The returned buffer is owned by the caller. Never include passwords
+    /// or untrusted endpoint names in metrics labels.
+    pub fn formatPrometheus(self: Stats, allocator: std.mem.Allocator) ![]u8 {
+        return std.fmt.allocPrint(allocator,
+            "# TYPE zig_mysql_pool_open gauge\n" ++
+            "zig_mysql_pool_open {d}\n" ++
+            "# TYPE zig_mysql_pool_idle gauge\n" ++
+            "zig_mysql_pool_idle {d}\n" ++
+            "# TYPE zig_mysql_pool_in_use gauge\n" ++
+            "zig_mysql_pool_in_use {d}\n" ++
+            "# TYPE zig_mysql_pool_connections_created_total counter\n" ++
+            "zig_mysql_pool_connections_created_total {d}\n" ++
+            "# TYPE zig_mysql_pool_connections_closed_total counter\n" ++
+            "zig_mysql_pool_connections_closed_total {d}\n" ++
+            "# TYPE zig_mysql_pool_connect_failures_total counter\n" ++
+            "zig_mysql_pool_connect_failures_total {d}\n" ++
+            "# TYPE zig_mysql_pool_health_check_failures_total counter\n" ++
+            "zig_mysql_pool_health_check_failures_total {d}\n" ++
+            "# TYPE zig_mysql_pool_reset_failures_total counter\n" ++
+            "zig_mysql_pool_reset_failures_total {d}\n" ++
+            "# TYPE zig_mysql_pool_expired_connections_total counter\n" ++
+            "zig_mysql_pool_expired_connections_total {d}\n" ++
+            "# TYPE zig_mysql_pool_waits_total counter\n" ++
+            "zig_mysql_pool_waits_total {d}\n" ++
+            "# TYPE zig_mysql_pool_acquire_timeouts_total counter\n" ++
+            "zig_mysql_pool_acquire_timeouts_total {d}\n" ++
+            "# TYPE zig_mysql_pool_failover_attempts_total counter\n" ++
+            "zig_mysql_pool_failover_attempts_total {d}\n" ++
+            "# TYPE zig_mysql_pool_failover_successes_total counter\n" ++
+            "zig_mysql_pool_failover_successes_total {d}\n",
+            .{
+                self.open, self.idle, self.in_use,
+                self.connections_created, self.connections_closed,
+                self.connect_failures, self.health_check_failures,
+                self.reset_failures, self.expired_connections,
+                self.waits, self.acquire_timeouts,
+                self.failover_attempts, self.failover_successes,
+            });
+    }
 };
 
 /// A bounded, concurrency-safe pool. Every acquired Client must be released
@@ -396,4 +437,27 @@ test "pool capacity is validated before connecting" {
         },
         .health_check_timeout = .fromSeconds(1),
     });
+}
+
+test "Prometheus pool exposition contains expected metrics and no configuration secrets" {
+    const stats = Stats{
+        .open = 3,
+        .idle = 1,
+        .in_use = 2,
+        .health_check_failures = 4,
+        .expired_connections = 5,
+        .connections_created = 8,
+        .connections_closed = 5,
+        .waits = 9,
+        .acquire_timeouts = 1,
+        .connect_failures = 2,
+        .reset_failures = 0,
+        .failover_attempts = 3,
+        .failover_successes = 1,
+    };
+    const metrics = try stats.formatPrometheus(std.testing.allocator);
+    defer std.testing.allocator.free(metrics);
+    try std.testing.expect(std.mem.indexOf(u8, metrics, "zig_mysql_pool_open 3\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, metrics, "zig_mysql_pool_failover_successes_total 1\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, metrics, "# TYPE zig_mysql_pool_acquire_timeouts_total counter\n") != null);
 }
