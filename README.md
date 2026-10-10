@@ -458,7 +458,7 @@ and [#11 typed scanner](https://github.com/truongbo17/zig-mysql/issues/11).
 | A1 | [#15 Lossless DECIMAL/NEWDECIMAL](https://github.com/truongbo17/zig-mysql/issues/15) | #14 | Done — [PR #41](https://github.com/truongbo17/zig-mysql/pull/41) |
 | A2 | [#16 DATE/TIME/DATETIME/TIMESTAMP](https://github.com/truongbo17/zig-mysql/issues/16) | #14 | In progress — [PR #42](https://github.com/truongbo17/zig-mysql/pull/42) (read parsers; native binding pending) |
 | A3 | [#17 JSON/BLOB/UTF-8 byte safety](https://github.com/truongbo17/zig-mysql/issues/17) | #14 | Planned |
-| A4 | [#18 Typed scanner for text rows](https://github.com/truongbo17/zig-mysql/issues/18) | #14–#17 as applicable | Planned |
+| A4 | [#18 Typed scanner for text rows](https://github.com/truongbo17/zig-mysql/issues/18) | #14–#17 as applicable | **Done — [PR #44](https://github.com/truongbo17/zig-mysql/pull/44), Zig 0.16/0.17 CI PASS** |
 | A5 | [#19 Typed scanner for prepared binary rows](https://github.com/truongbo17/zig-mysql/issues/19) | #18 + scalar types | Planned |
 
 ### Lossless DECIMAL binding (A1)
