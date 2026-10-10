@@ -289,7 +289,10 @@ defer pool.deinit(io);
 ```
 
 **This is connection-establishment failover, not transparent query failover.**
-The pool does not re-run SQL commands, resume transactions, detect replication
+Authentication denial, incompatible security policy, invalid TLS certificates,
+and invalid client configuration fail closed: they are not treated as a reason
+to try alternate endpoints. Only transport/connection setup failures trigger
+ordered fallback. The pool does not re-run SQL commands, resume transactions, detect replication
 lag or guarantee that a failed write was not committed. If an existing
 connection dies during a transaction, return/discard it and let application
 transaction and idempotency policy decide whether the operation may be retried.
