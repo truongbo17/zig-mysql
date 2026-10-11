@@ -112,6 +112,104 @@ pub const MultiResult = struct {
     }
 };
 
+/// Iterates CALL result parts without accumulating all resultsets. Each
+/// returned Result owns its arena and must be deinitialized by the caller.
+/// Deinitializing early drains unread parts; abandoning poisons the socket.
+/// Do not reuse a pooled connection until done or deinit has completed.
+pub const ProcedureResults = struct {
+    client: *Client,
+    done: bool = false,
+    parts: usize = 0,
+    final_ok: ?Ok = null,
+
+    pub fn next(self: *ProcedureResults, io: std.Io) !?Result {
+        if (self.client.broken) return error.ConnectionBroken;
+        if (self.done) return null;
+        if (self.parts >= 256) {
+            self.client.broken = true;
+            return error.TooManyResults;
+        }
+        // A server error in a later part is not evidence that all procedure
+        // packets have been consumed. Fail closed rather than desynchronize.
+        var part = self.client.readResultPart(io, false) catch |err| {
+            self.client.broken = true;
+            return err;
+        };
+        self.parts += 1;
+        if (!part.more) {
+            self.done = true;
+            self.client.active_stream = false;
+            if (part.result.value == .ok) self.final_ok = part.result.value.ok;
+        }
+        return part.result;
+    }
+
+    /// A separate deadline for fetching one buffered result part, not a
+    /// whole CALL deadline. On timeout do not re-use the socket or replay SQL.
+    pub fn nextWithTimeout(self: *ProcedureResults, io: std.Io, timeout: std.Io.Duration) !?Result {
+        if (self.client.broken) return error.ConnectionBroken;
+        if (self.done) return null;
+        const Outcome = union(enum) {
+            part: anyerror!?Result,
+            timer: anyerror!void,
+        };
+        var slots: [2]Outcome = undefined;
+        var select: std.Io.Select(Outcome) = .init(io, &slots);
+        defer {
+            while (select.cancel()) |remaining| switch (remaining) {
+                .part => |response| {
+                    if (response) |value| {
+                        if (value) |owned| {
+                            var result = owned;
+                            result.deinit();
+                        }
+                    } else |_| {}
+                },
+                .timer => {},
+            };
+        }
+        select.concurrent(.part, ProcedureResults.next, .{ self, io }) catch |err| {
+            self.client.broken = true;
+            return err;
+        };
+        select.concurrent(.timer, std.Io.sleep, .{ io, timeout, .awake }) catch |err| {
+            self.client.broken = true;
+            return err;
+        };
+        switch (select.await() catch |err| {
+            self.client.broken = true;
+            return err;
+        }) {
+            .part => |response| return response catch |err| {
+                if (err == error.Canceled) self.client.broken = true;
+                return err;
+            },
+            .timer => |elapsed| {
+                self.client.broken = true;
+                try elapsed;
+                return error.QueryTimeout;
+            },
+        }
+    }
+
+    pub fn abandon(self: *ProcedureResults) void {
+        if (!self.done) self.client.broken = true;
+        self.done = true;
+        self.client.active_stream = false;
+    }
+
+    pub fn deinit(self: *ProcedureResults, io: std.Io) void {
+        if (!self.done and !self.client.broken) {
+            // Drain only the unconsumed part(s), without buffering rows.
+            self.client.drainRemaining(io, false) catch {
+                self.client.broken = true;
+            };
+        }
+        self.done = true;
+        self.client.active_stream = false;
+    }
+};
+
 const ResultPart = struct {
     result: Result,
     more: bool,
@@ -465,6 +563,16 @@ pub const Client = struct {
     pub fn queryAll(self: *Client, io: std.Io, sql: []const u8) !MultiResult {
         try self.command(io, 0x03, sql);
         return self.readAllResults(io, false);
+    }
+
+    /// Issue exactly one CALL statement and iterate its response parts.
+    /// SQL text is passed unchanged: use fixed trusted SQL, never concatenate
+    /// untrusted parameters. OUT/INOUT session variables are visible only
+    /// after all result parts are consumed or safely drained.
+    pub fn callResults(self: *Client, io: std.Io, sql: []const u8) !ProcedureResults {
+        try self.command(io, 0x03, sql);
+        self.active_stream = true;
+        return .{ .client = self };
     }
 
     /// Stream a SELECT result without buffering all rows.
