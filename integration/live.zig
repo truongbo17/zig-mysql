@@ -880,3 +880,45 @@ test "MySQL B2 CALL result iterator IN OUT INOUT and early cleanup" {
     try std.testing.expectError(error.ConnectionBroken, conn.ping(io));
     abort.deinit(io);
 }
+
+test "MySQL B2 later error and deadline poison CALL session" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest",
+        .password = "zig_mysql_test",
+        .database = "zigtest",
+    });
+    defer conn.deinit(io);
+    var drop = try conn.query(io, "DROP PROCEDURE IF EXISTS zig_b2_late");
+    drop.deinit();
+    var created = try conn.query(io, "CREATE PROCEDURE zig_b2_late() BEGIN SELECT 1 AS good_result; SELECT * FROM zig_b2_nonexistent; END");
+    created.deinit();
+    var results = try conn.callResults(io, "CALL zig_b2_late()");
+    var first = (try results.next(io)).?;
+    try std.testing.expectEqualStrings("1", first.value.rows.items[0].values[0].?);
+    first.deinit();
+    try std.testing.expectError(error.ServerError, results.next(io));
+    try std.testing.expect(conn.broken);
+    results.deinit(io);
+    try std.testing.expectError(error.ConnectionBroken, conn.ping(io));
+
+    var slow_conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest",
+        .password = "zig_mysql_test",
+        .database = "zigtest",
+    });
+    defer slow_conn.deinit(io);
+    var slow_drop = try slow_conn.query(io, "DROP PROCEDURE IF EXISTS zig_b2_slow");
+    slow_drop.deinit();
+    var slow_create = try slow_conn.query(io, "CREATE PROCEDURE zig_b2_slow() BEGIN SELECT SLEEP(2); END");
+    slow_create.deinit();
+    var slow = try slow_conn.callResults(io, "CALL zig_b2_slow()");
+    try std.testing.expectError(error.QueryTimeout, slow.nextWithTimeout(io, .fromMilliseconds(50)));
+    try std.testing.expect(slow_conn.broken);
+    slow.deinit(io); // never drain after a canceled read
+    try std.testing.expectError(error.ConnectionBroken, slow_conn.ping(io));
+}
