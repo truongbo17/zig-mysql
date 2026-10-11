@@ -764,3 +764,46 @@ test "MySQL typed prepared binary result scanner keeps SQL types, unsignedness a
     defer ping.deinit();
     try std.testing.expectEqualStrings("1", ping.value.rows.items[0].values[0].?);
 }
+
+test "MySQL 8.0 CALL multi-result framing, drain and reuse" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest",
+        .password = "zig_mysql_test",
+        .database = "zigtest",
+    });
+    defer conn.deinit(io);
+
+    var cleanup = try conn.query(io, "DROP PROCEDURE IF EXISTS zig_b1_multi_result");
+    cleanup.deinit();
+    var created = try conn.query(io,
+        "CREATE PROCEDURE zig_b1_multi_result() BEGIN SELECT 11 AS first_value; SELECT 22 AS second_value; END");
+    created.deinit();
+
+    var multi = try conn.queryAll(io, "CALL zig_b1_multi_result()");
+    defer multi.deinit();
+    try std.testing.expect(multi.items.len >= 3);
+    try std.testing.expectEqualStrings("11", multi.items[0].value.rows.items[0].values[0].?);
+    try std.testing.expectEqualStrings("22", multi.items[1].value.rows.items[0].values[0].?);
+    try std.testing.expect(multi.items[multi.items.len - 1].value == .ok);
+    try conn.ping(io);
+
+    // Existing single-result API must detect additional results rather than
+    // leave an unread CALL result queued for the next command.
+    try std.testing.expectError(error.MultipleResults, conn.query(io, "CALL zig_b1_multi_result()"));
+    try std.testing.expect(!conn.broken);
+    try conn.ping(io);
+
+    var stream = try conn.queryRows(io, "CALL zig_b1_multi_result()");
+    try std.testing.expectEqualStrings("11", (try stream.next(io)).?.values[0].?);
+    try std.testing.expectError(error.MultipleResults, stream.next(io));
+    stream.deinit(io);
+    try std.testing.expect(!conn.broken);
+    try conn.ping(io);
+
+    var removed = try conn.query(io, "DROP PROCEDURE zig_b1_multi_result");
+    removed.deinit();
+}
