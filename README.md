@@ -102,7 +102,7 @@ Do not concatenate untrusted input into SQL. Use `prepare` and `execute` with ty
 
 For large `SELECT` results, use `queryRows` and call `RowStream.deinit(io)` after iteration. Each returned row's byte slices remain valid until the next `next(io)` call. A connection rejects other commands while streaming rows remain unread; `deinit` drains them so the connection can be reused.
 
-## Multiple results and safe framing (Sprint B1, issue #20 — under CI review)
+## Multiple results and safe framing (Sprint B1, issue #20)
 
 The opt-in `queryAll(io, sql)` buffers every classic-protocol response
 part returned by one SQL command, including row resultsets and a terminal OK
@@ -131,8 +131,9 @@ The subsequent connection is reusable only when draining fully succeeds.
 Malformed packets, later result errors, read failures, or unbounded (>256)
 result part chains poison the connection and require eviction. Buffered
 `queryAll` is not for unbounded datasets and has no streaming prepared
-counterpart yet (#22). Successful Zig 0.16/0.17 exact-head CI remains an
-acceptance prerequisite; no production certification is implied.
+counterpart yet (#22). Zig 0.16/0.17 full MySQL/MariaDB/TLS CI passed for the implementation
+([run #38116254824](https://github.com/truongbo17/zig-mysql/actions/runs/38116254824));
+production acceptance remains independently blocked by #13.
 
 ## Typed text row scanning (A4, issue #18)
 
@@ -584,7 +585,7 @@ Epic tracker: [#12 Multiple results and prepared streaming](https://github.com/t
 
 | Order | Small issue | Dependency | Status |
 | --- | --- | --- | --- |
-| B1 | [#20 Multi-result framing and safe drain](https://github.com/truongbo17/zig-mysql/issues/20) | — first in Sprint B | In PR — tests pending |
+| B1 | [#20 Multi-result framing and safe drain](https://github.com/truongbo17/zig-mysql/issues/20) | — first in Sprint B | Done — [PR #52](https://github.com/truongbo17/zig-mysql/pull/52), [Zig 0.16/0.17 full CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38116254824) |
 | B2 | [#21 Stored procedure CALL resultsets](https://github.com/truongbo17/zig-mysql/issues/21) | #20 | Planned |
 | B3 | [#22 Prepared binary row streaming API](https://github.com/truongbo17/zig-mysql/issues/22) | #20 | Planned |
 | B4 | [#23 100k rows, >16 MiB and streaming fault tests](https://github.com/truongbo17/zig-mysql/issues/23) | #22 | Planned |
@@ -631,7 +632,7 @@ replica is **not** proof of completed production acceptance. See
 [release runbook](docs/RELEASE_RUNBOOK.md) and
 [production-readiness gates](docs/PRODUCTION_READINESS.md).
 
-**Next implementation:** Sprint B starts at [#20 — multi-result protocol framing and safe drain](https://github.com/truongbo17/zig-mysql/issues/20), currently in draft PR and awaiting full CI; [#21](https://github.com/truongbo17/zig-mysql/issues/21) and [#22](https://github.com/truongbo17/zig-mysql/issues/22) still depend on its verified merge.
+**Next implementation:** Sprint B #20 is implemented and validated in [PR #52](https://github.com/truongbo17/zig-mysql/pull/52); continue with [#21 stored-procedure result iteration](https://github.com/truongbo17/zig-mysql/issues/21) and [#22 prepared binary streaming](https://github.com/truongbo17/zig-mysql/issues/22). Production gate #13 remains open.
 **Sprint A is complete** (#14–#19, epics #10/#11 closed). Feature PRs may
 continue while the independent OPS release gate #13 remains open.
 
