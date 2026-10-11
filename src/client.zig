@@ -668,7 +668,12 @@ pub const Client = struct {
         // Bound untrusted result-part counts; buffered SQL rows are still
         // subject to the application query/memory budget as before.
         while (results.items.len < 256) {
-            var part = try self.readResultPart(io, binary);
+            var part = self.readResultPart(io, binary) catch |err| {
+                // A later result error may leave server framing ambiguous.
+                // Never put this connection back in the pool after such a CALL.
+                if (results.items.len > 0) self.broken = true;
+                return err;
+            };
             results.append(self.allocator, part.result) catch |err| {
                 part.result.deinit();
                 self.broken = true;
