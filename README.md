@@ -679,11 +679,35 @@ Epic tracker: [#12 Multiple results and prepared streaming](https://github.com/t
 | B3 | [#22 Prepared binary row streaming API](https://github.com/truongbo17/zig-mysql/issues/22) | #20 | Done — [PR #54](https://github.com/truongbo17/zig-mysql/pull/54), [Zig 0.16/0.17 CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38135291250) |
 | B4 | [#23 100k rows, >16 MiB and streaming fault tests](https://github.com/truongbo17/zig-mysql/issues/23) | #22 | Done — [PR #55](https://github.com/truongbo17/zig-mysql/pull/55), [Zig 0.16/0.17 CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38135757213) |
 
+### Savepoint helpers (Sprint C1 — issue #24)
+
+`Client.savepoint(io, "step_1")`, `rollbackToSavepoint(io, "step_1")`
+and `releaseSavepoint(io, "step_1")` use explicitly named SQL
+savepoints. The helper validates **1–64 ASCII letters, digits and
+underscores** and backtick-quotes the identifier; malicious or invalid
+names fail locally with `error.InvalidSavepointName` without sending SQL.
+
+```zig
+try conn.begin(io);
+try conn.savepoint(io, "address");
+errdefer conn.rollback(io) catch {};
+// perform an optional set of writes...
+try conn.rollbackToSavepoint(io, "address");
+try conn.releaseSavepoint(io, "address");
+try conn.commit(io);
+```
+
+MySQL replaces an earlier savepoint with the same name. Rolling back to a
+savepoint keeps it active; releasing it does not commit. Transaction
+`COMMIT`/`ROLLBACK` and `COM_RESET_CONNECTION` invalidate savepoints.
+DDL can implicitly commit in MySQL. No implicit transaction, nested
+transaction abstraction, auto-retry or isolation changes are introduced.
+
 ### Sprint C — Transactions and prepared-statement cache (P1)
 
 | Order | Small issue | Dependency | Status |
 | --- | --- | --- | --- |
-| C1 | [#24 Savepoints and transaction helpers](https://github.com/truongbo17/zig-mysql/issues/24) | Existing transaction API | Planned |
+| C1 | [#24 Savepoints and transaction helpers](https://github.com/truongbo17/zig-mysql/issues/24) | Existing transaction API | Under PR review — CI pending |
 | C2 | [#25 Bounded COMMIT/ROLLBACK and ambiguous outcomes](https://github.com/truongbo17/zig-mysql/issues/25) | #24 contract | Planned |
 | C3 | [#26 Per-connection bounded statement cache](https://github.com/truongbo17/zig-mysql/issues/26) | #20, reset safety | Planned |
 | C4 | [#27 Cache benchmarks and regressions](https://github.com/truongbo17/zig-mysql/issues/27) | #26 | Planned |
