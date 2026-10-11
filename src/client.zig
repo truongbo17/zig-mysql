@@ -1151,7 +1151,7 @@ fn validateSavepointName(name: []const u8) !void {
 test "savepoint identifiers reject SQL injection before sending packets" {
     for ([_][]const u8{ "", "foo-bar", "a`b", "a b", "x;DROP TABLE t", "a\\nb", "ä" }) |name|
         try std.testing.expectError(error.InvalidSavepointName, validateSavepointName(name));
-    var long: [65]u8 = @splat('x');
+    const long: [65]u8 = @splat('x');
     try std.testing.expectError(error.InvalidSavepointName, validateSavepointName(&long));
     for ([_][]const u8{ "s1", "Nested_42", "1", "SELECT" }) |name|
         try validateSavepointName(name);
