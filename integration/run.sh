@@ -76,6 +76,8 @@ timeout 120s zig build stress-integration
 # runner measurements are diagnostic only; do not use as fixed performance SLAs.
 if [[ "$(uname -s)" == Linux ]]; then
   timeout 90s zig build -Doptimize=ReleaseFast bench
+  # Deterministic prepared SQL mix; diagnostic CI baselines, not production SLA.
+  timeout 120s zig build -Doptimize=ReleaseFast cache-bench
 else
   zig build -Doptimize=ReleaseFast bench
 fi
