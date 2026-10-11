@@ -135,6 +135,43 @@ counterpart yet (#22). Zig 0.16/0.17 full MySQL/MariaDB/TLS CI passed for the im
 ([run #38116254824](https://github.com/truongbo17/zig-mysql/actions/runs/38116254824));
 production acceptance remains independently blocked by #13.
 
+## Stored procedure CALL result iteration (Sprint B2, issue #21)
+
+For procedures returning multiple resultsets, `callResults(io, sql)`
+returns an iterator rather than buffering the complete CALL. Invoke
+`next(io)` to obtain each independently owned `Result`; call
+`Result.deinit()` on each returned value. The iterator yields row
+resultsets (including empty ones) and a terminal OK status, available in
+`final_ok` after exhaustion. OUT/INOUT session variables should be
+queried **after** the procedure has fully completed. Example:
+
+```zig
+var call = try conn.callResults(io, "CALL monthly_rollup(7, @total, @status)");
+defer call.deinit(io);
+while (try call.next(io)) |part| {
+    var owned = part;
+    defer owned.deinit();
+    switch (owned.value) {
+        .rows => |rows| _ = rows.items.len,
+        .ok => |status| _ = status.affected_rows,
+    }
+}
+// OUT/INOUT variables now reflect procedure completion.
+var vars = try conn.query(io, "SELECT @total, @status");
+defer vars.deinit();
+```
+
+Use fixed trusted CALL SQL; never interpolate untrusted values into SQL.
+Procedure parts are buffered **one resultset at a time**, not one row at
+a time; use the dedicated prepared streaming API from #22 for very large
+resultsets. `call.deinit(io)` drains remaining resultsets without retaining
+all rows, so a clean connection may return to the pool; `call.abandon()`
+intentionally poisons it when draining is unsafe or unwanted.
+`call.nextWithTimeout(io, duration)` bounds **one result part**, not
+the complete procedure; it poisons a timed-out session. Connection commands
+are rejected with `error.RowsNotConsumed` while iteration is active.
+Always deinitialize the iterator, even after the last `next()`.
+
 ## Typed text row scanning (A4, issue #18)
 
 The additive `mysql.TextRow.init(row)` adapter provides **checked**, allocation-free
@@ -586,7 +623,7 @@ Epic tracker: [#12 Multiple results and prepared streaming](https://github.com/t
 | Order | Small issue | Dependency | Status |
 | --- | --- | --- | --- |
 | B1 | [#20 Multi-result framing and safe drain](https://github.com/truongbo17/zig-mysql/issues/20) | — first in Sprint B | Done — [PR #52](https://github.com/truongbo17/zig-mysql/pull/52), [Zig 0.16/0.17 full CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38116254824) |
-| B2 | [#21 Stored procedure CALL resultsets](https://github.com/truongbo17/zig-mysql/issues/21) | #20 | Planned |
+| B2 | [#21 Stored procedure CALL resultsets](https://github.com/truongbo17/zig-mysql/issues/21) | #20 | Done — [PR #53](https://github.com/truongbo17/zig-mysql/pull/53), [Zig 0.16/0.17 CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38134426983) |
 | B3 | [#22 Prepared binary row streaming API](https://github.com/truongbo17/zig-mysql/issues/22) | #20 | Planned |
 | B4 | [#23 100k rows, >16 MiB and streaming fault tests](https://github.com/truongbo17/zig-mysql/issues/23) | #22 | Planned |
 
