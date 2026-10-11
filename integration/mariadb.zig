@@ -326,7 +326,7 @@ test "MariaDB CALL multi-result framing, drain and reuse" {
     var cleanup = try conn.query(io, "DROP PROCEDURE IF EXISTS zig_b1_multi_result");
     cleanup.deinit();
     var created = try conn.query(io,
-        "CREATE PROCEDURE zig_b1_multi_result() BEGIN SELECT 11 AS first_value; SELECT 22 AS second_value; END");
+        "CREATE PROCEDURE zig_b1_multi_result() BEGIN SELECT 11 AS first_result; SELECT 22 AS second_result; END");
     created.deinit();
 
     var multi = try conn.queryAll(io, "CALL zig_b1_multi_result()");
