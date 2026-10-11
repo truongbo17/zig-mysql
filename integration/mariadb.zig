@@ -540,3 +540,34 @@ test "MariaDB B4 101000 prepared binary rows within 2 MiB client allocation" {
     try std.testing.expectEqual(@as(usize, 101000), count);
     try conn.ping(io);
 }
+
+test "MariaDB B4 prepared streaming timeout evicts saturated pool slot" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var pool = try mysql.Pool.init(std.testing.allocator, .{
+        .connection = .{
+            .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33308") },
+            .username = "zigtest", .password = "zig_mysql_test", .database = "zigtest",
+        },
+        .max_open = 1, .max_idle = 1,
+    });
+    defer pool.deinit(io);
+    const conn = try pool.acquireWithTimeout(io, .fromSeconds(5));
+    var stmt = try conn.prepare(io, "SELECT SLEEP(2) AS suspended");
+    const response = conn.executeRowsWithTimeout(io, stmt, &.{}, .fromMilliseconds(50));
+    if (response) |value| {
+        var rows = value;
+        try std.testing.expectError(error.QueryTimeout, rows.nextWithTimeout(io, .fromMilliseconds(50)));
+        rows.deinit(io);
+    } else |err| {
+        try std.testing.expect(err == error.QueryTimeout);
+    }
+    try std.testing.expect(conn.broken);
+    pool.release(io, conn);
+    try std.testing.expectEqual(@as(usize, 0), pool.stats(io).in_use);
+    try std.testing.expect(pool.stats(io).open <= 1);
+    const retry = try pool.acquireWithTimeout(io, .fromSeconds(5));
+    try retry.ping(io);
+    pool.release(io, retry);
+}
