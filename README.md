@@ -277,6 +277,9 @@ to return buffered binary results; the new API is additive.
 
 ## Prepared streaming robustness tests (Sprint B4, issue #23)
 
+See the [Sprint B evidence report](docs/SPRINT_B_REPORT.md) for exact CI,
+resource-budget and throughput evidence, and remaining release blockers.
+
 The MySQL/MariaDB integration suite scans **101,000** prepared binary rows
 under a **2 MiB fixed allocator cap** for the driver. This proves per-row
 allocation stays bounded over that fixture (it does not measure universal RSS
