@@ -529,6 +529,7 @@ test "MariaDB B4 101000 prepared binary rows within 2 MiB client allocation" {
         "b(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM b WHERE n<100) " ++
         "SELECT CAST(? AS SIGNED) + a.n*101 + b.n AS value FROM a CROSS JOIN b");
     defer conn.closeStatement(io, &stmt) catch {};
+    const started = std.Io.Clock.awake.now(io);
     var rows = try conn.executeRows(io, stmt, &.{.{ .int = 100 }});
     var count: usize = 0;
     while (try rows.next(io)) |row| {
@@ -539,6 +540,11 @@ test "MariaDB B4 101000 prepared binary rows within 2 MiB client allocation" {
     rows.deinit(io);
     try std.testing.expectEqual(@as(usize, 101000), count);
     try conn.ping(io);
+    const elapsed_ns: u64 = @intCast(@max(1, started.untilNow(io, .awake).toNanoseconds()));
+    const throughput = @as(f64, @floatFromInt(count)) * 1_000_000_000.0 /
+        @as(f64, @floatFromInt(elapsed_ns));
+    std.debug.print("B4_STREAM_BENCH rows={d} elapsed_ns={d} rows_per_sec={d:.1} allocator_cap_bytes={d}\\n",
+        .{ count, elapsed_ns, throughput, storage.len });
 }
 
 test "MariaDB B4 prepared streaming timeout evicts saturated pool slot" {
