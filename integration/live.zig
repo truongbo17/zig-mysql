@@ -996,3 +996,71 @@ test "MySQL B4 101000 prepared binary rows within 2 MiB client allocation" {
     try std.testing.expectEqual(@as(usize, 101000), count);
     try conn.ping(io);
 }
+
+test "MySQL B4 >16 MiB binary BLOB fragments roundtrip while streaming" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest", .password = "zig_mysql_test", .database = "zigtest",
+    });
+    defer conn.deinit(io);
+    var stmt = try conn.prepare(io, "SELECT REPEAT('Z', 16777216) AS huge_blob");
+    defer conn.closeStatement(io, &stmt) catch {};
+    var rows = try conn.executeRows(io, stmt, &.{});
+    const row = (try rows.nextWithTimeout(io, .fromSeconds(15))).?;
+    try std.testing.expectEqual(@as(usize, 16777216), row.values[0].?.len);
+    try std.testing.expectEqual(@as(u8, 'Z'), row.values[0].?[row.values[0].?.len - 1]);
+    try std.testing.expect((try rows.next(io)) == null);
+    rows.deinit(io);
+    try conn.ping(io);
+}
+
+test "MySQL B4 kill mid prepared stream discards pooled connection" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const config: mysql.Config = .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest", .password = "zig_mysql_test", .database = "zigtest",
+    };
+    var pool = try mysql.Pool.init(std.testing.allocator, .{
+        .connection = config, .max_open = 1, .max_idle = 1,
+    });
+    defer pool.deinit(io);
+    const conn = try pool.acquireWithTimeout(io, .fromSeconds(5));
+    var id_result = try conn.query(io, "SELECT CONNECTION_ID()");
+    const id = try std.fmt.parseInt(u64, id_result.value.rows.items[0].values[0].?, 10);
+    id_result.deinit();
+    var stmt = try conn.prepare(io,
+        "WITH RECURSIVE a(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM a WHERE n<999) " ++
+        "SELECT REPEAT('k', 65536) AS payload FROM a");
+    var stream = try conn.executeRows(io, stmt, &.{});
+    var killer = try mysql.Client.connect(std.testing.allocator, io, config);
+    defer killer.deinit(io);
+    const kill_sql = try std.fmt.allocPrint(std.testing.allocator, "KILL CONNECTION {d}", .{id});
+    defer std.testing.allocator.free(kill_sql);
+    var killed = try killer.query(io, kill_sql);
+    killed.deinit();
+
+    var saw_failure = false;
+    for (0..1001) |_| {
+        const item = stream.next(io) catch {
+            saw_failure = true;
+            break;
+        };
+        if (item == null) break;
+    }
+    try std.testing.expect(saw_failure);
+    try std.testing.expect(conn.broken);
+    stream.deinit(io);
+    // Closing a prepared handle would send SQL on a dead socket.
+    stmt.closed = true;
+    pool.release(io, conn);
+    try std.testing.expectEqual(@as(usize, 0), pool.stats(io).in_use);
+    try std.testing.expect(pool.stats(io).open <= 1);
+    const replacement = try pool.acquireWithTimeout(io, .fromSeconds(5));
+    try replacement.ping(io);
+    pool.release(io, replacement);
+}
