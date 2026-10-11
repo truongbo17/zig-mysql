@@ -53,6 +53,22 @@ class RoadmapCoverageTests(unittest.TestCase):
         self.assertIn("Sprint B #20", roadmap)
         self.assertIn("does not close production gate #13", roadmap)
 
+    def test_sprint_b_all_four_issues_have_delivered_prs(self):
+        readme = (REPO / "README.md").read_text()
+        section = readme.split("### Sprint B —", 1)[1].split("### Sprint C —", 1)[0]
+        for number, issue, pr in ((1, 20, 52), (2, 21, 53), (3, 22, 54), (4, 23, 55)):
+            rows = [line for line in section.splitlines()
+                    if line.startswith(f"| B{number} |") and f"/issues/{issue})" in line]
+            self.assertEqual(len(rows), 1, f"missing Sprint B{number} issue #{issue}")
+            self.assertIn("Done", rows[0])
+            self.assertIn(f"/pull/{pr}", rows[0])
+            self.assertIn("/actions/runs/", rows[0])
+            self.assertNotIn("pending", rows[0].lower())
+        roadmap = (REPO / "docs/FEATURE_ROADMAP.md").read_text()
+        self.assertIn("**Sprint B complete:**", roadmap)
+        self.assertIn("production release gate #13", roadmap)
+        self.assertIn("24-hour soak", readme)
+
     def test_plan_and_gate_are_explicit(self):
         readme = (REPO / "README.md").read_text()
         self.assertIn("## Feature plan and issue tracker", readme)

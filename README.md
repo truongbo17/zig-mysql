@@ -275,6 +275,28 @@ without I/O. On any cancellation or malformed response, discard the
 connection rather than returning it as reusable. `execute()` continues
 to return buffered binary results; the new API is additive.
 
+## Prepared streaming robustness tests (Sprint B4, issue #23)
+
+See the [Sprint B evidence report](docs/SPRINT_B_REPORT.md) for exact CI,
+resource-budget and throughput evidence, and remaining release blockers.
+
+The MySQL/MariaDB integration suite scans **101,000** prepared binary rows
+under a **2 MiB fixed allocator cap** for the driver. This proves per-row
+allocation stays bounded over that fixture (it does not measure universal RSS
+or cover arbitrary concurrent workloads). The MySQL suite additionally checks
+one **16,777,216-byte** binary result requiring classic-protocol message
+reassembly, then verifies a mid-stream `KILL CONNECTION` cannot return an
+unsynchronized connection to a pool (`max_open=1`). Both server families
+exercise a prepared `SELECT SLEEP(2)` with a 50 ms client cancellation
+and verify that a fresh pooled connection can recover.
+
+`zig build integration` and `zig build mariadb-integration` run the
+live fixtures. The full disposable database, TLS, restart, stress and pool
+soak smoke matrix is `bash integration/run.sh`. GitHub Actions results are
+commit-specific and do not replace the production release 24-hour soak
+or realistic p95/p99, throughput, memory/CPU/FD and HA/security validation
+(OPS #13).
+
 ## Connection pooling
 
 `Pool` limits the number of live MySQL connections and waits when all connections
@@ -654,8 +676,8 @@ Epic tracker: [#12 Multiple results and prepared streaming](https://github.com/t
 | --- | --- | --- | --- |
 | B1 | [#20 Multi-result framing and safe drain](https://github.com/truongbo17/zig-mysql/issues/20) | — first in Sprint B | Done — [PR #52](https://github.com/truongbo17/zig-mysql/pull/52), [Zig 0.16/0.17 full CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38116254824) |
 | B2 | [#21 Stored procedure CALL resultsets](https://github.com/truongbo17/zig-mysql/issues/21) | #20 | Done — [PR #53](https://github.com/truongbo17/zig-mysql/pull/53), [Zig 0.16/0.17 CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38134426983) |
-| B3 | [#22 Prepared binary row streaming API](https://github.com/truongbo17/zig-mysql/issues/22) | #20 | In PR — CI pending |
-| B4 | [#23 100k rows, >16 MiB and streaming fault tests](https://github.com/truongbo17/zig-mysql/issues/23) | #22 | Planned |
+| B3 | [#22 Prepared binary row streaming API](https://github.com/truongbo17/zig-mysql/issues/22) | #20 | Done — [PR #54](https://github.com/truongbo17/zig-mysql/pull/54), [Zig 0.16/0.17 CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38135291250) |
+| B4 | [#23 100k rows, >16 MiB and streaming fault tests](https://github.com/truongbo17/zig-mysql/issues/23) | #22 | Done — [PR #55](https://github.com/truongbo17/zig-mysql/pull/55), [Zig 0.16/0.17 CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38135757213) |
 
 ### Sprint C — Transactions and prepared-statement cache (P1)
 
@@ -699,7 +721,7 @@ replica is **not** proof of completed production acceptance. See
 [release runbook](docs/RELEASE_RUNBOOK.md) and
 [production-readiness gates](docs/PRODUCTION_READINESS.md).
 
-**Next implementation:** Sprint B #20 is implemented and validated in [PR #52](https://github.com/truongbo17/zig-mysql/pull/52); continue with [#21 stored-procedure result iteration](https://github.com/truongbo17/zig-mysql/issues/21) and [#22 prepared binary streaming](https://github.com/truongbo17/zig-mysql/issues/22). Production gate #13 remains open.
+**Next implementation:** Sprint C begins with [#24 savepoint helpers](https://github.com/truongbo17/zig-mysql/issues/24) and [#25 COMMIT/ROLLBACK deadline safety](https://github.com/truongbo17/zig-mysql/issues/25). Sprint B #20–#23 is implemented and tested in PRs #52–#55; independent production gate #13 remains open.
 **Sprint A is complete** (#14–#19, epics #10/#11 closed). Feature PRs may
 continue while the independent OPS release gate #13 remains open.
 
