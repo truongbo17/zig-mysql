@@ -25,6 +25,10 @@ pub const Config = struct {
     password: []const u8,
     database: []const u8 = "",
     max_message_size: usize = 64 * 1024 * 1024,
+    /// Maximum cached server-side prepares on this one connection.
+    /// Disabled by default; pooled sessions reset on release, so entries
+    /// never cross borrower boundaries.
+    statement_cache_capacity: usize = 0,
     connect_timeout: std.Io.Timeout = .none,
     tls: ?TlsConfig = null,
 };
@@ -81,6 +85,19 @@ pub const Param = union(enum) {
     timestamp: temporal.DateTime,
     bytes: []const u8,
     boolean: bool,
+};
+
+pub const StatementCacheStats = struct {
+    entries: usize,
+    hits: u64,
+    misses: u64,
+    evictions: u64,
+};
+
+const CachedStatement = struct {
+    sql: []u8,
+    statement: Statement,
+    last_used: u64,
 };
 
 pub const Statement = struct {
@@ -355,6 +372,12 @@ pub const Client = struct {
     last_server_error: ?ServerError = null,
     active_stream: bool = false,
     broken: bool = false,
+    cached_statements: std.ArrayList(CachedStatement) = .empty,
+    statement_cache_capacity: usize = 0,
+    cache_clock: u64 = 0,
+    cache_hits: u64 = 0,
+    cache_misses: u64 = 0,
+    cache_evictions: u64 = 0,
     // Populated by Pool only. Standalone clients do not track pool lifecycle.
     pool_created_at: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
     pool_released_at: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
@@ -403,7 +426,7 @@ pub const Client = struct {
             .allocator = allocator,
             .stream = stream,
             .max_message_size = config.max_message_size,
-        } };
+        }, .statement_cache_capacity = config.statement_cache_capacity };
         errdefer self.deinit(io);
 
         const greeting = try self.wire.read(io);
@@ -438,6 +461,8 @@ pub const Client = struct {
     }
 
     pub fn deinit(self: *Client, io: std.Io) void {
+        self.clearCachedStatements();
+        self.cached_statements.deinit(self.allocator);
         if (self.last_server_error) |e| self.allocator.free(e.message);
         self.wire.close(io);
     }
@@ -449,6 +474,9 @@ pub const Client = struct {
 
     /// Changes the default schema for subsequent statements (COM_INIT_DB).
     pub fn selectDatabase(self: *Client, io: std.Io, database: []const u8) !void {
+        // A prepared statement belongs to its original schema. Close all
+        // handles BEFORE switching; a failed COM_INIT_DB is not a cache hit.
+        try self.flushCachedStatements(io);
         try self.command(io, 0x02, database);
         try self.readCommandOk(io);
     }
@@ -461,6 +489,8 @@ pub const Client = struct {
     pub fn resetConnection(self: *Client, io: std.Io) !void {
         try self.command(io, 0x1f, "");
         try self.readCommandOk(io);
+        // COM_RESET_CONNECTION invalidates all MySQL statement handles.
+        self.clearCachedStatements();
         if (self.last_server_error) |e| {
             self.allocator.free(e.message);
             self.last_server_error = null;
@@ -673,6 +703,86 @@ pub const Client = struct {
         for (0..statement.column_count) |_| try self.discardPacket(io);
         if (statement.column_count > 0) try self.expectEof(io);
         return statement;
+    }
+
+    /// Execute one prepared statement using an optional per-connection LRU.
+    /// Unlike prepare(), no Statement ownership is exposed. The cache is
+    /// not shared between pool borrowers; reset/schema change invalidates it.
+    pub fn executeCached(self: *Client, io: std.Io, sql: []const u8, params: []const Param) !Result {
+        if (self.broken) return error.ConnectionBroken;
+        if (self.active_stream) return error.RowsNotConsumed;
+        if (self.statement_cache_capacity == 0) {
+            var one = try self.prepare(io, sql);
+            defer self.closeStatement(io, &one) catch { self.broken = true; };
+            return self.execute(io, one, params);
+        }
+        const stmt = try self.lookupCachedStatement(io, sql);
+        return self.execute(io, stmt, params);
+    }
+
+    pub fn statementCacheStats(self: *const Client) StatementCacheStats {
+        return .{
+            .entries = self.cached_statements.items.len,
+            .hits = self.cache_hits,
+            .misses = self.cache_misses,
+            .evictions = self.cache_evictions,
+        };
+    }
+
+    fn lookupCachedStatement(self: *Client, io: std.Io, sql: []const u8) !Statement {
+        self.cache_clock +%= 1;
+        for (self.cached_statements.items) |*entry| {
+            if (std.mem.eql(u8, entry.sql, sql)) {
+                self.cache_hits += 1;
+                entry.last_used = self.cache_clock;
+                return entry.statement;
+            }
+        }
+        self.cache_misses += 1;
+        if (self.cached_statements.items.len >= self.statement_cache_capacity) {
+            var victim_index: usize = 0;
+            var oldest = self.cached_statements.items[0].last_used;
+            for (self.cached_statements.items, 0..) |entry, index| {
+                if (entry.last_used < oldest) {
+                    oldest = entry.last_used;
+                    victim_index = index;
+                }
+            }
+            const victim = self.cached_statements.orderedRemove(victim_index);
+            defer self.allocator.free(victim.sql);
+            var statement = victim.statement;
+            try self.closeStatement(io, &statement);
+            self.cache_evictions += 1;
+        }
+        var statement = try self.prepare(io, sql);
+        errdefer self.closeStatement(io, &statement) catch { self.broken = true; };
+        const key = try self.allocator.dupe(u8, sql);
+        errdefer self.allocator.free(key);
+        try self.cached_statements.append(self.allocator, .{
+            .sql = key, .statement = statement, .last_used = self.cache_clock,
+        });
+        return statement;
+    }
+
+    /// Flush one session's cached handles and free their SQL keys. This does
+    /// not touch standalone explicitly prepared Statement handles.
+    fn flushCachedStatements(self: *Client, io: std.Io) !void {
+        if (self.broken) return error.ConnectionBroken;
+        if (self.active_stream) return error.RowsNotConsumed;
+        for (self.cached_statements.items) |entry| {
+            var statement = entry.statement;
+            self.closeStatement(io, &statement) catch |err| {
+                self.clearCachedStatements();
+                self.broken = true;
+                return err;
+            };
+        }
+        self.clearCachedStatements();
+    }
+
+    fn clearCachedStatements(self: *Client) void {
+        for (self.cached_statements.items) |entry| self.allocator.free(entry.sql);
+        self.cached_statements.clearRetainingCapacity();
     }
 
     /// Execute with positional, typed parameters. Results use the binary row protocol.
