@@ -964,3 +964,35 @@ test "MySQL B3 streaming binary prepared rows, NULL/BLOB and early drain" {
     try std.testing.expect(!conn.broken);
     try conn.ping(io);
 }
+
+test "MySQL B4 101000 prepared binary rows within 2 MiB client allocation" {
+    var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const storage = try std.heap.page_allocator.alloc(u8, 2 * 1024 * 1024);
+    defer std.heap.page_allocator.free(storage);
+    var fixed = std.heap.FixedBufferAllocator.init(storage);
+    var conn = try mysql.Client.connect(fixed.allocator(), io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest",
+        .password = "zig_mysql_test",
+        .database = "zigtest",
+    });
+    defer conn.deinit(io);
+
+    var stmt = try conn.prepare(io,
+        "WITH RECURSIVE a(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM a WHERE n<999), " ++
+        "b(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM b WHERE n<100) " ++
+        "SELECT CAST(? AS SIGNED) + a.n*101 + b.n AS value FROM a CROSS JOIN b");
+    defer conn.closeStatement(io, &stmt) catch {};
+    var rows = try conn.executeRows(io, stmt, &.{.{ .int = 100 }});
+    var count: usize = 0;
+    while (try rows.next(io)) |row| {
+        try std.testing.expectEqual(@as(usize, 1), row.values.len);
+        if (count == 0) try std.testing.expect(row.values[0].?.len > 0);
+        count += 1;
+    }
+    rows.deinit(io);
+    try std.testing.expectEqual(@as(usize, 101000), count);
+    try conn.ping(io);
+}
