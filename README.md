@@ -747,14 +747,32 @@ lease boundary; pooled reuse does **not** preserve prepared handles.
 Standalone `prepare`/`execute`/`closeStatement` remain independent;
 do not assume that a `Statement` survives a reset or reconnect.
 
+### Prepared statement cache benchmark (Sprint C4 — issue #27)
+
+Run `zig build -Doptimize=ReleaseFast cache-bench` against local
+disposable MySQL 8.0. CI executes this benchmark in
+`integration/run.sh`. The benchmark uses **the same eight prepared
+`SELECT ? + N` statements**, 200 operations per worker and
+1/8/32-worker matrix with cache disabled/enabled. It reports
+request throughput, p50/p95/p99, process CPU, cache hits/misses,
+server `Com_stmt_prepare` delta and remaining server
+`Prepared_stmt_count`. The benchmark tests **intra-connection**
+prepared reuse, not an HTTP request that returns its pooled session
+after each statement. Cached handles are intentionally lost at pool
+release due mandatory COM_RESET_CONNECTION.
+
+[Measured CI diagnostics and limitations](docs/SPRINT_C_REPORT.md).
+Performance differences are dominated by a ~41 ms uncached TCP close
+path on the GitHub runner; do not use these values as production SLAs.
+
 ### Sprint C — Transactions and prepared-statement cache (P1)
 
 | Order | Small issue | Dependency | Status |
 | --- | --- | --- | --- |
 | C1 | [#24 Savepoints and transaction helpers](https://github.com/truongbo17/zig-mysql/issues/24) | Existing transaction API | Done — [PR #56](https://github.com/truongbo17/zig-mysql/pull/56), [Zig CI](https://github.com/truongbo17/zig-mysql/actions/runs/38141738935) |
 | C2 | [#25 Bounded COMMIT/ROLLBACK and ambiguous outcomes](https://github.com/truongbo17/zig-mysql/issues/25) | #24 contract | Done — [PR #57](https://github.com/truongbo17/zig-mysql/pull/57), [Zig CI](https://github.com/truongbo17/zig-mysql/actions/runs/38142540809) |
-| C3 | [#26 Per-connection bounded statement cache](https://github.com/truongbo17/zig-mysql/issues/26) | #20, reset safety | In PR — exact-head CI pending |
-| C4 | [#27 Cache benchmarks and regressions](https://github.com/truongbo17/zig-mysql/issues/27) | #26 | Planned |
+| C3 | [#26 Per-connection bounded statement cache](https://github.com/truongbo17/zig-mysql/issues/26) | #20, reset safety | Done — [PR #58](https://github.com/truongbo17/zig-mysql/pull/58), [Zig 0.16/0.17 CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38143171954) |
+| C4 | [#27 Cache benchmarks and regressions](https://github.com/truongbo17/zig-mysql/issues/27) | #26 | Done — [PR #59](https://github.com/truongbo17/zig-mysql/pull/59), [Zig 0.16/0.17 benchmark CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38142640379) |
 
 ### Sprint D — Observability, batching and high CCU (P2)
 
@@ -789,7 +807,7 @@ replica is **not** proof of completed production acceptance. See
 [release runbook](docs/RELEASE_RUNBOOK.md) and
 [production-readiness gates](docs/PRODUCTION_READINESS.md).
 
-**Next implementation:** Complete [#26 per-session statement cache](https://github.com/truongbo17/zig-mysql/issues/26) then [#27 benchmark and regression evidence](https://github.com/truongbo17/zig-mysql/issues/27). C1 #24 and C2 #25 are merged; OPS release gate #13 remains open.
+**Next implementation:** Sprint D starts at [#28](https://github.com/truongbo17/zig-mysql/issues/28), with further observability, batching and CCU tasks tracked in the roadmap. Sprint C issues #24–#27 are implemented and covered by PRs #56–#59; OPS production gate #13 remains open.
 **Sprint A is complete** (#14–#19, epics #10/#11 closed). Feature PRs may
 continue while the independent OPS release gate #13 remains open.
 
