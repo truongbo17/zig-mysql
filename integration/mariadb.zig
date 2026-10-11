@@ -577,3 +577,45 @@ test "MariaDB B4 prepared streaming timeout evicts saturated pool slot" {
     try retry.ping(io);
     pool.release(io, retry);
 }
+
+test "MariaDB C1 savepoint rollback nesting invalid name and reset" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33308") },
+        .username = "zigtest", .password = "zig_mysql_test", .database = "zigtest",
+    });
+    defer conn.deinit(io);
+    var create = try conn.query(io, "CREATE TABLE IF NOT EXISTS zig_c1_savepoint (id INT PRIMARY KEY)");
+    create.deinit();
+    var cleanup = try conn.query(io, "DELETE FROM zig_c1_savepoint WHERE id BETWEEN 910001 AND 910020");
+    cleanup.deinit();
+    try conn.begin(io);
+    var first = try conn.query(io, "INSERT INTO zig_c1_savepoint VALUES (910001)");
+    first.deinit();
+    try conn.savepoint(io, "outer_1");
+    var second = try conn.query(io, "INSERT INTO zig_c1_savepoint VALUES (910002)");
+    second.deinit();
+    try conn.savepoint(io, "inner_2");
+    var third = try conn.query(io, "INSERT INTO zig_c1_savepoint VALUES (910003)");
+    third.deinit();
+    try std.testing.expectError(error.InvalidSavepointName, conn.savepoint(io, "x; DROP TABLE fake"));
+    try conn.ping(io);
+    try conn.rollbackToSavepoint(io, "inner_2");
+    try conn.releaseSavepoint(io, "inner_2");
+    try std.testing.expectError(error.ServerError, conn.releaseSavepoint(io, "inner_2"));
+    try conn.rollbackToSavepoint(io, "outer_1");
+    try conn.releaseSavepoint(io, "outer_1");
+    try conn.commit(io);
+    var rows = try conn.query(io, "SELECT COUNT(*) FROM zig_c1_savepoint WHERE id BETWEEN 910001 AND 910003");
+    try std.testing.expectEqualStrings("1", rows.value.rows.items[0].values[0].?);
+    rows.deinit();
+    try conn.begin(io);
+    try conn.savepoint(io, "will_reset");
+    try conn.resetConnection(io);
+    try std.testing.expectError(error.ServerError, conn.rollbackToSavepoint(io, "will_reset"));
+    try conn.ping(io);
+    var drop = try conn.query(io, "DROP TABLE zig_c1_savepoint");
+    drop.deinit();
+}
