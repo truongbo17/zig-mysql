@@ -1215,3 +1215,60 @@ test "C2 deadline race returns success or unknown, never a reusable ambiguous so
         try std.testing.expectError(error.ConnectionBroken, conn.ping(io));
     }
 }
+
+test "MySQL C3 bounded cached prepares LRU schema reset and pool isolation" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cfg: mysql.Config = .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest", .password = "zig_mysql_test", .database = "zigtest",
+        .statement_cache_capacity = 2,
+    };
+    var conn = try mysql.Client.connect(std.testing.allocator, io, cfg);
+    defer conn.deinit(io);
+    var a = try conn.executeCached(io, "SELECT ? + 1", &.{.{ .int = 5 }});
+    try std.testing.expectEqualStrings("6", a.value.rows.items[0].values[0].?);
+    a.deinit();
+    var b = try conn.executeCached(io, "SELECT ? + 1", &.{.{ .int = 6 }});
+    b.deinit();
+    var c = try conn.executeCached(io, "SELECT ? + 2", &.{.{ .int = 7 }});
+    c.deinit();
+    var d = try conn.executeCached(io, "SELECT ? + 3", &.{.{ .int = 8 }});
+    d.deinit();
+    const stats = conn.statementCacheStats();
+    try std.testing.expectEqual(@as(usize, 2), stats.entries);
+    try std.testing.expectEqual(@as(u64, 1), stats.hits);
+    try std.testing.expectEqual(@as(u64, 3), stats.misses);
+    try std.testing.expectEqual(@as(u64, 1), stats.evictions);
+    var e = try conn.executeCached(io, "SELECT ? + 1", &.{.{ .int = 11 }});
+    try std.testing.expectEqualStrings("12", e.value.rows.items[0].values[0].?);
+    e.deinit();
+    try std.testing.expectEqual(@as(u64, 2), conn.statementCacheStats().evictions);
+    try conn.selectDatabase(io, "information_schema");
+    try std.testing.expectEqual(@as(usize, 0), conn.statementCacheStats().entries);
+    try conn.selectDatabase(io, "zigtest");
+    var f = try conn.executeCached(io, "SELECT ? + 1", &.{.{ .int = 12 }});
+    f.deinit();
+    try conn.resetConnection(io);
+    try std.testing.expectEqual(@as(usize, 0), conn.statementCacheStats().entries);
+    var g = try conn.executeCached(io, "SELECT ? + 1", &.{.{ .int = 13 }});
+    g.deinit();
+    try conn.ping(io);
+
+    var pool = try mysql.Pool.init(std.testing.allocator, .{
+        .connection = cfg, .max_open = 1, .max_idle = 1,
+    });
+    defer pool.deinit(io);
+    const one = try pool.acquire(io);
+    var p = try one.executeCached(io, "SELECT ? + 1", &.{.{ .int = 1 }});
+    p.deinit();
+    try std.testing.expectEqual(@as(usize, 1), one.statementCacheStats().entries);
+    pool.release(io, one); // COM_RESET_CONNECTION drops server handles
+    const another = try pool.acquire(io);
+    try std.testing.expectEqual(@as(usize, 0), another.statementCacheStats().entries);
+    var q = try another.executeCached(io, "SELECT ? + 1", &.{.{ .int = 2 }});
+    try std.testing.expectEqualStrings("3", q.value.rows.items[0].values[0].?);
+    q.deinit();
+    pool.release(io, another);
+}
