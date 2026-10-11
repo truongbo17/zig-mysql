@@ -543,7 +543,7 @@ test "MariaDB B4 101000 prepared binary rows within 2 MiB client allocation" {
     const elapsed_ns: u64 = @intCast(@max(1, started.untilNow(io, .awake).toNanoseconds()));
     const throughput = @as(f64, @floatFromInt(count)) * 1_000_000_000.0 /
         @as(f64, @floatFromInt(elapsed_ns));
-    std.debug.print("B4_STREAM_BENCH rows={d} elapsed_ns={d} rows_per_sec={d:.1} allocator_cap_bytes={d}\\n",
+    std.debug.print("B4_STREAM_BENCH rows={d} elapsed_ns={d} rows_per_sec={d:.1} allocator_cap_bytes={d}\n",
         .{ count, elapsed_ns, throughput, storage.len });
 }
 
