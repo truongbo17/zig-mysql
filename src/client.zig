@@ -237,6 +237,8 @@ pub const RowStream = struct {
         };
         defer self.client.allocator.free(packet);
         if (packet.len > 0 and packet[0] == 0xff) {
+            // A later streaming SQL error may leave unread result parts.
+            self.client.broken = true;
             self.done = true;
             self.client.active_stream = false;
             return self.client.serverFailure(packet);
@@ -962,10 +964,10 @@ pub const Client = struct {
         };
         defer self.allocator.free(packet);
         if (packet.len > 0 and packet[0] == 0xff) return self.serverFailure(packet);
-        if (!isEof(packet)) {
+        _ = eofStatus(packet) catch |err| {
             self.broken = true;
-            return error.Malformed;
-        }
+            return err;
+        };
     }
 
     fn command(self: *Client, io: std.Io, code: u8, data: []const u8) !void {
