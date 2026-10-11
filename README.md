@@ -679,13 +679,41 @@ Epic tracker: [#12 Multiple results and prepared streaming](https://github.com/t
 | B3 | [#22 Prepared binary row streaming API](https://github.com/truongbo17/zig-mysql/issues/22) | #20 | Done — [PR #54](https://github.com/truongbo17/zig-mysql/pull/54), [Zig 0.16/0.17 CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38135291250) |
 | B4 | [#23 100k rows, >16 MiB and streaming fault tests](https://github.com/truongbo17/zig-mysql/issues/23) | #22 | Done — [PR #55](https://github.com/truongbo17/zig-mysql/pull/55), [Zig 0.16/0.17 CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38135757213) |
 
+### Per-session prepared statement LRU (Sprint C3 — issue #26)
+
+Caching is **opt-in** with `Config.statement_cache_capacity` (default 0).
+Call `executeCached(io, sql, params)`; SQL bytes identify the cached handle,
+while parameter values are still bound with the binary protocol.
+
+```zig
+const cfg: mysql.Config = .{
+    .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:3306") },
+    .username = "app", .password = password, .database = "app",
+    .statement_cache_capacity = 32,
+};
+var conn = try mysql.Client.connect(allocator, io, cfg);
+defer conn.deinit(io);
+var result = try conn.executeCached(io, "SELECT value FROM metrics WHERE id=?", &.{.{ .int = 3 }});
+defer result.deinit();
+const stats = conn.statementCacheStats(); // entries, hits, misses, evictions
+```
+
+Cache capacity bounds the number of server-side prepared handles **per
+connection**, not across a pool. LRU eviction sends `COM_STMT_CLOSE`.
+`selectDatabase` explicitly closes all cached handles **before** switching
+schemas; `resetConnection` clears local cache after server reset. The pool
+resets sessions between borrowers, so cache entries never cross a pool
+lease boundary; pooled reuse does **not** preserve prepared handles.
+Standalone `prepare`/`execute`/`closeStatement` remain independent;
+do not assume that a `Statement` survives a reset or reconnect.
+
 ### Sprint C — Transactions and prepared-statement cache (P1)
 
 | Order | Small issue | Dependency | Status |
 | --- | --- | --- | --- |
 | C1 | [#24 Savepoints and transaction helpers](https://github.com/truongbo17/zig-mysql/issues/24) | Existing transaction API | Planned |
 | C2 | [#25 Bounded COMMIT/ROLLBACK and ambiguous outcomes](https://github.com/truongbo17/zig-mysql/issues/25) | #24 contract | Planned |
-| C3 | [#26 Per-connection bounded statement cache](https://github.com/truongbo17/zig-mysql/issues/26) | #20, reset safety | Planned |
+| C3 | [#26 Per-connection bounded statement cache](https://github.com/truongbo17/zig-mysql/issues/26) | #20, reset safety | In PR — CI pending |
 | C4 | [#27 Cache benchmarks and regressions](https://github.com/truongbo17/zig-mysql/issues/27) | #26 | Planned |
 
 ### Sprint D — Observability, batching and high CCU (P2)
