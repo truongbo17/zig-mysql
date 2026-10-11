@@ -132,7 +132,7 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, workers: usize, use_cache:
     std.debug.print(
         "CACHE_BENCH cache={d} workers={d} requests={d} req_s={d:.1} " ++
         "p50_ms={d:.3} p95_ms={d:.3} p99_ms={d:.3} cpu_ms={d:.3} " ++
-        "hits={d} misses={d} evictions={d} server_prepares_delta={d} server_prepared_remaining={d}\\n",
+        "hits={d} misses={d} evictions={d} server_prepares_delta={d} server_prepared_remaining={d}\n",
         .{ @intFromBool(use_cache), workers, total, rate,
             percentile(samples, 50), percentile(samples, 95), percentile(samples, 99),
             cpu_ms, hits, misses, evictions,
