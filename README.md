@@ -631,7 +631,7 @@ replica is **not** proof of completed production acceptance. See
 [release runbook](docs/RELEASE_RUNBOOK.md) and
 [production-readiness gates](docs/PRODUCTION_READINESS.md).
 
-**Active implementation:** Sprint B [#20 — multi-result protocol framing and safe drain](https://github.com/truongbo17/zig-mysql/issues/20) is under review/CI; [#21](https://github.com/truongbo17/zig-mysql/issues/21) and [#22](https://github.com/truongbo17/zig-mysql/issues/22) still depend on its verified merge.
+**Next implementation:** Sprint B starts at [#20 — multi-result protocol framing and safe drain](https://github.com/truongbo17/zig-mysql/issues/20), currently in draft PR and awaiting full CI; [#21](https://github.com/truongbo17/zig-mysql/issues/21) and [#22](https://github.com/truongbo17/zig-mysql/issues/22) still depend on its verified merge.
 **Sprint A is complete** (#14–#19, epics #10/#11 closed). Feature PRs may
 continue while the independent OPS release gate #13 remains open.
 
