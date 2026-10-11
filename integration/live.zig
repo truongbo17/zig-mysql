@@ -806,4 +806,15 @@ test "MySQL 8.0 CALL multi-result framing, drain and reuse" {
 
     var removed = try conn.query(io, "DROP PROCEDURE zig_b1_multi_result");
     removed.deinit();
+
+    var old_error = try conn.query(io, "DROP PROCEDURE IF EXISTS zig_b1_later_error");
+    old_error.deinit();
+    var bad = try conn.query(io,
+        "CREATE PROCEDURE zig_b1_later_error() BEGIN SELECT 1 AS accepted; SELECT * FROM zig_b1_missing_table; END");
+    bad.deinit();
+    // The first result is valid; the error arrives as the next result part.
+    // This path must not return a reusable but desynchronized session.
+    try std.testing.expectError(error.ServerError, conn.queryAll(io, "CALL zig_b1_later_error()"));
+    try std.testing.expect(conn.broken);
+    try std.testing.expectError(error.ConnectionBroken, conn.ping(io));
 }
