@@ -568,6 +568,32 @@ pub const Client = struct {
         try self.runControlStatement(io, "ROLLBACK");
     }
 
+    /// Explicit, named SAVEPOINT. Never implicitly BEGIN, COMMIT, or retry.
+    /// Valid identifiers contain 1..64 ASCII letters, digits or underscores.
+    /// The name is quoted after validation and cannot inject SQL.
+    pub fn savepoint(self: *Client, io: std.Io, name: []const u8) !void {
+        try self.runSavepointCommand(io, "SAVEPOINT ", name);
+    }
+
+    /// Rolls back work after the named savepoint without ending the transaction.
+    /// MySQL keeps the named savepoint active; RELEASE it when no longer needed.
+    pub fn rollbackToSavepoint(self: *Client, io: std.Io, name: []const u8) !void {
+        try self.runSavepointCommand(io, "ROLLBACK TO SAVEPOINT ", name);
+    }
+
+    /// Deletes a savepoint. Does not commit any SQL changes.
+    pub fn releaseSavepoint(self: *Client, io: std.Io, name: []const u8) !void {
+        try self.runSavepointCommand(io, "RELEASE SAVEPOINT ", name);
+    }
+
+    fn runSavepointCommand(self: *Client, io: std.Io, prefix: []const u8, name: []const u8) !void {
+        try validateSavepointName(name);
+        // Upper limit: prefix (22) + 2 backticks + 64 identifier characters.
+        var sql: [96]u8 = undefined;
+        const text = try std.fmt.bufPrint(&sql, "{s}`{s}`", .{ prefix, name });
+        try self.runControlStatement(io, text);
+    }
+
     pub fn query(self: *Client, io: std.Io, sql: []const u8) !Result {
         try self.command(io, 0x03, sql);
         return self.readResult(io, false);
@@ -1110,6 +1136,25 @@ fn appendLenString(out: *std.ArrayList(u8), allocator: std.mem.Allocator, text: 
         try appendInt(out, allocator, n, 8);
     }
     try out.appendSlice(allocator, text);
+}
+
+fn validateSavepointName(name: []const u8) !void {
+    if (name.len == 0 or name.len > 64) return error.InvalidSavepointName;
+    for (name) |ch| {
+        if (!((ch >= 'a' and ch <= 'z') or
+            (ch >= 'A' and ch <= 'Z') or
+            (ch >= '0' and ch <= '9') or ch == '_'))
+            return error.InvalidSavepointName;
+    }
+}
+
+test "savepoint identifiers reject SQL injection before sending packets" {
+    for ([_][]const u8{ "", "foo-bar", "a`b", "a b", "x;DROP TABLE t", "a\\nb", "ä" }) |name|
+        try std.testing.expectError(error.InvalidSavepointName, validateSavepointName(name));
+    const long: [65]u8 = @splat('x');
+    try std.testing.expectError(error.InvalidSavepointName, validateSavepointName(&long));
+    for ([_][]const u8{ "s1", "Nested_42", "1", "SELECT" }) |name|
+        try validateSavepointName(name);
 }
 
 fn isEof(packet: []const u8) bool {
