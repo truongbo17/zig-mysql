@@ -922,3 +922,45 @@ test "MySQL B2 later error and deadline poison CALL session" {
     slow.deinit(io); // never drain after a canceled read
     try std.testing.expectError(error.ConnectionBroken, slow_conn.ping(io));
 }
+
+test "MySQL B3 streaming binary prepared rows, NULL/BLOB and early drain" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest",
+        .password = "zig_mysql_test",
+        .database = "zigtest",
+    });
+    defer conn.deinit(io);
+    var stmt = try conn.prepare(io,
+        "SELECT CAST(? AS SIGNED) AS qty, ? AS payload, NULL AS absent " ++
+        "UNION ALL SELECT -7, X'4142', NULL");
+    defer conn.closeStatement(io, &stmt) catch {};
+    try std.testing.expectError(error.ParameterCountMismatch, conn.executeRows(io, stmt, &.{}));
+    try conn.ping(io);
+
+    const blob = [_]u8{ 0, 0xff, 0, 'A' };
+    var stream = try conn.executeRowsWithTimeout(io, stmt, &.{ .{ .int = 42 }, .{ .bytes = &blob } }, .fromSeconds(4));
+    try std.testing.expect(stream.binary);
+    try std.testing.expectEqual(@as(usize, 3), stream.columns.len);
+    try std.testing.expectError(error.RowsNotConsumed, conn.ping(io));
+    const first = (try stream.nextWithTimeout(io, .fromSeconds(4))).?;
+    try std.testing.expectEqualStrings("42", first.values[0].?);
+    try std.testing.expectEqualSlices(u8, &blob, first.values[1].?);
+    try std.testing.expect(first.values[2] == null);
+    const second = (try stream.next(io)).?;
+    try std.testing.expectEqualStrings("-7", second.values[0].?);
+    try std.testing.expectEqualStrings("AB", second.values[1].?);
+    try std.testing.expect(second.values[2] == null);
+    try std.testing.expect((try stream.next(io)) == null);
+    stream.deinit(io);
+    try conn.ping(io);
+
+    var early = try conn.executeRows(io, stmt, &.{ .{ .int = 12 }, .{ .bytes = "hello" } });
+    _ = (try early.next(io)).?;
+    early.deinit(io);
+    try std.testing.expect(!conn.broken);
+    try conn.ping(io);
+}

@@ -222,6 +222,8 @@ pub const RowStream = struct {
     columns: []const Column,
     metadata_arena: std.heap.ArenaAllocator,
     row_arena: std.heap.ArenaAllocator,
+    /// True for prepared binary rows, false for text query rows.
+    binary: bool = false,
     done: bool = false,
 
     pub fn next(self: *RowStream, io: std.Io) !?Row {
@@ -235,6 +237,8 @@ pub const RowStream = struct {
         };
         defer self.client.allocator.free(packet);
         if (packet.len > 0 and packet[0] == 0xff) {
+            // A later streaming SQL error may leave unread result parts.
+            self.client.broken = true;
             self.done = true;
             self.client.active_stream = false;
             return self.client.serverFailure(packet);
@@ -250,7 +254,7 @@ pub const RowStream = struct {
             // additional parts before reporting them, never leave unread data
             // queued for the next pooled borrower.
             if (status & server_more_results_exists != 0) {
-                try self.client.drainRemaining(io, false);
+                try self.client.drainRemaining(io, self.binary);
                 return error.MultipleResults;
             }
             return null;
@@ -259,9 +263,21 @@ pub const RowStream = struct {
         var c = protocol.Cursor{ .bytes = packet };
         const a = self.row_arena.allocator();
         const values = try a.alloc(?[]const u8, self.columns.len);
-        for (values) |*value| {
-            const bytes = try c.lenString();
-            value.* = if (bytes) |b| try a.dupe(u8, b) else null;
+        if (self.binary) {
+            if (try c.byte() != 0) return error.Malformed;
+            const bitmap = try c.take((self.columns.len + 9) / 8);
+            for (values, 0..) |*value, i| {
+                const bit = i + 2;
+                value.* = if (bitmap[bit / 8] & (@as(u8, 1) << @intCast(bit % 8)) != 0)
+                    null
+                else
+                    try parseBinaryValue(a, &c, self.columns[i]);
+            }
+        } else {
+            for (values) |*value| {
+                const bytes = try c.lenString();
+                value.* = if (bytes) |b| try a.dupe(u8, b) else null;
+            }
         }
         if (c.pos != packet.len) return error.Malformed;
         return .{ .values = values };
@@ -578,6 +594,10 @@ pub const Client = struct {
     /// Stream a SELECT result without buffering all rows.
     pub fn queryRows(self: *Client, io: std.Io, sql: []const u8) !RowStream {
         try self.command(io, 0x03, sql);
+        return self.readRowStream(io, false);
+    }
+
+    fn readRowStream(self: *Client, io: std.Io, binary: bool) !RowStream {
         const first = self.wire.read(io) catch |err| {
             self.broken = true;
             return err;
@@ -617,6 +637,7 @@ pub const Client = struct {
             .columns = columns,
             .metadata_arena = arena,
             .row_arena = std.heap.ArenaAllocator.init(self.allocator),
+            .binary = binary,
         };
     }
 
@@ -656,6 +677,24 @@ pub const Client = struct {
 
     /// Execute with positional, typed parameters. Results use the binary row protocol.
     pub fn execute(self: *Client, io: std.Io, statement: Statement, params: []const Param) !Result {
+        try self.sendExecute(io, statement, params);
+        return self.readResult(io, true);
+    }
+
+    /// Stream prepared binary rows with one-row lifetime and bounded memory.
+    /// The SELECT result must be fully read or the stream safely deinitialized.
+    pub fn executeRows(self: *Client, io: std.Io, statement: Statement, params: []const Param) !RowStream {
+        try self.sendExecute(io, statement, params);
+        return self.readRowStream(io, true);
+    }
+
+    /// Bounded initial COM_STMT_EXECUTE / column metadata phase. Per-row
+    /// deadlines are applied independently with RowStream.nextWithTimeout.
+    pub fn executeRowsWithTimeout(self: *Client, io: std.Io, statement: Statement, params: []const Param, timeout: std.Io.Duration) !RowStream {
+        return self.withTimeout(RowStream, io, timeout, Client.executeRows, .{ self, io, statement, params });
+    }
+
+    fn sendExecute(self: *Client, io: std.Io, statement: Statement, params: []const Param) !void {
         if (self.broken) return error.ConnectionBroken;
         if (self.active_stream) return error.RowsNotConsumed;
         if (statement.closed) return error.StatementClosed;
@@ -739,7 +778,6 @@ pub const Client = struct {
             self.broken = true;
             return err;
         };
-        return self.readResult(io, true);
     }
 
     /// COM_STMT_CLOSE has no server response.
@@ -926,10 +964,10 @@ pub const Client = struct {
         };
         defer self.allocator.free(packet);
         if (packet.len > 0 and packet[0] == 0xff) return self.serverFailure(packet);
-        if (!isEof(packet)) {
+        _ = eofStatus(packet) catch |err| {
             self.broken = true;
-            return error.Malformed;
-        }
+            return err;
+        };
     }
 
     fn command(self: *Client, io: std.Io, code: u8, data: []const u8) !void {
