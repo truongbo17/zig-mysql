@@ -6,6 +6,7 @@ pub const Config = @import("client.zig").Config;
 pub const Address = @import("client.zig").Address;
 pub const TlsConfig = @import("client.zig").TlsConfig;
 pub const Result = @import("client.zig").Result;
+pub const MultiResult = @import("client.zig").MultiResult;
 pub const Param = @import("client.zig").Param;
 pub const Decimal = @import("decimal.zig").Decimal;
 pub const TextRow = @import("text_scan.zig").TextRow;
