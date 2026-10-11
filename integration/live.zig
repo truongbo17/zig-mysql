@@ -1078,7 +1078,7 @@ test "MySQL B4 prepared streaming timeout evicts saturated pool slot" {
     });
     defer pool.deinit(io);
     const conn = try pool.acquireWithTimeout(io, .fromSeconds(5));
-    var stmt = try conn.prepare(io, "SELECT SLEEP(2) AS suspended");
+    const stmt = try conn.prepare(io, "SELECT SLEEP(2) AS suspended");
     const response = conn.executeRowsWithTimeout(io, stmt, &.{}, .fromMilliseconds(50));
     if (response) |value| {
         var rows = value;
