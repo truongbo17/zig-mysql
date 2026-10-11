@@ -819,3 +819,64 @@ test "MySQL 8.0 CALL multi-result framing, drain and reuse" {
     try std.testing.expect(conn.broken);
     try std.testing.expectError(error.ConnectionBroken, conn.ping(io));
 }
+
+test "MySQL B2 CALL result iterator IN OUT INOUT and early cleanup" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest",
+        .password = "zig_mysql_test",
+        .database = "zigtest",
+    });
+    defer conn.deinit(io);
+    var removed = try conn.query(io, "DROP PROCEDURE IF EXISTS zig_b2_inout");
+    removed.deinit();
+    var create = try conn.query(io,
+        "CREATE PROCEDURE zig_b2_inout(IN x INT, OUT doubled INT, INOUT acc INT) " ++
+        "BEGIN SET doubled = x * 2; SET acc = acc + x; " ++
+        "SELECT x AS first_result; SELECT 99 AS empty_result WHERE 1=0; END");
+    create.deinit();
+    var set_vars = try conn.query(io, "SET @zig_b2_doubled = NULL, @zig_b2_acc = 3");
+    set_vars.deinit();
+
+    var parts = try conn.callResults(io, "CALL zig_b2_inout(7, @zig_b2_doubled, @zig_b2_acc)");
+    try std.testing.expectError(error.RowsNotConsumed, conn.ping(io));
+    var count: usize = 0;
+    while (try parts.next(io)) |part| {
+        var owned = part;
+        defer owned.deinit();
+        if (count == 0) try std.testing.expectEqualStrings("7", owned.value.rows.items[0].values[0].?);
+        if (count == 1) try std.testing.expectEqual(@as(usize, 0), owned.value.rows.items.len);
+        count += 1;
+    }
+    try std.testing.expect(count >= 3);
+    try std.testing.expect(parts.final_ok != null);
+    parts.deinit(io);
+    try conn.ping(io);
+    var output = try conn.query(io, "SELECT @zig_b2_doubled, @zig_b2_acc");
+    try std.testing.expectEqualStrings("14", output.value.rows.items[0].values[0].?);
+    try std.testing.expectEqualStrings("10", output.value.rows.items[0].values[1].?);
+    output.deinit();
+
+    var early = try conn.callResults(io, "CALL zig_b2_inout(4, @zig_b2_doubled, @zig_b2_acc)");
+    var first = (try early.next(io)).?;
+    first.deinit();
+    try std.testing.expectError(error.RowsNotConsumed, conn.ping(io));
+    early.deinit(io); // memory-bounded drain of remaining rowset and final OK
+    try std.testing.expect(!conn.broken);
+    try conn.ping(io);
+    var output2 = try conn.query(io, "SELECT @zig_b2_doubled, @zig_b2_acc");
+    try std.testing.expectEqualStrings("8", output2.value.rows.items[0].values[0].?);
+    try std.testing.expectEqualStrings("14", output2.value.rows.items[0].values[1].?);
+    output2.deinit();
+
+    var remove = try conn.query(io, "DROP PROCEDURE zig_b2_inout");
+    remove.deinit();
+    var abort = try conn.callResults(io, "SELECT 1");
+    abort.abandon(); // deliberately never read the first response
+    try std.testing.expect(conn.broken);
+    try std.testing.expectError(error.ConnectionBroken, conn.ping(io));
+    abort.deinit(io);
+}
