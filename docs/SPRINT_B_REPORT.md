@@ -10,7 +10,7 @@
 | [#20](https://github.com/truongbo17/zig-mysql/issues/20) — B1 | [PR #52](https://github.com/truongbo17/zig-mysql/pull/52); [Zig 0.16/0.17 CI](https://github.com/truongbo17/zig-mysql/actions/runs/38116572202); negotiated multi-result framing, safe draining, empty rows and later errors |
 | [#21](https://github.com/truongbo17/zig-mysql/issues/21) — B2 | [PR #53](https://github.com/truongbo17/zig-mysql/pull/53); [Zig 0.16/0.17 CI](https://github.com/truongbo17/zig-mysql/actions/runs/38134684623); CALL result iteration, final OK, IN/OUT/INOUT, timeouts and cancellation |
 | [#22](https://github.com/truongbo17/zig-mysql/issues/22) — B3 | [PR #54](https://github.com/truongbo17/zig-mysql/pull/54); [Zig 0.16/0.17 CI](https://github.com/truongbo17/zig-mysql/actions/runs/38135291250); prepared binary per-row streaming, NULL/BLOB preservation, draining and parser hardening |
-| [#23](https://github.com/truongbo17/zig-mysql/issues/23) — B4 | [PR #55](https://github.com/truongbo17/zig-mysql/pull/55); test implementation and exact-head acceptance pending on this PR |
+| [#23](https://github.com/truongbo17/zig-mysql/issues/23) — B4 | [PR #55](https://github.com/truongbo17/zig-mysql/pull/55); [Zig 0.16/0.17 CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38135757213); 101k-row fixed-memory scan, >16 MiB binary packet, KILL and timeout/pool recovery |
 
 ## B4 reproducible test evidence
 
@@ -26,8 +26,9 @@
   poison and pool recovery on MySQL and MariaDB.
 - Full Zig 0.16 and 0.17 MySQL/MariaDB integration: [staging run
   #38135325228](https://github.com/truongbo17/zig-mysql/actions/runs/38135325228).
-  All jobs passed on the source/test implementation; the final PR head
-  must pass the same matrix independently.
+  All jobs passed on the original source/test implementation; the final
+  B4 integration changes also passed [PR CI #38135757213](https://github.com/truongbo17/zig-mysql/actions/runs/38135757213).
+  Any subsequent documentation commit must also pass CI before merge.
 
 ### Diagnostic throughput on GitHub Actions runners
 

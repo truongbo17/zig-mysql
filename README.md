@@ -677,7 +677,7 @@ Epic tracker: [#12 Multiple results and prepared streaming](https://github.com/t
 | B1 | [#20 Multi-result framing and safe drain](https://github.com/truongbo17/zig-mysql/issues/20) | — first in Sprint B | Done — [PR #52](https://github.com/truongbo17/zig-mysql/pull/52), [Zig 0.16/0.17 full CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38116254824) |
 | B2 | [#21 Stored procedure CALL resultsets](https://github.com/truongbo17/zig-mysql/issues/21) | #20 | Done — [PR #53](https://github.com/truongbo17/zig-mysql/pull/53), [Zig 0.16/0.17 CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38134426983) |
 | B3 | [#22 Prepared binary row streaming API](https://github.com/truongbo17/zig-mysql/issues/22) | #20 | Done — [PR #54](https://github.com/truongbo17/zig-mysql/pull/54), [Zig 0.16/0.17 CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38135291250) |
-| B4 | [#23 100k rows, >16 MiB and streaming fault tests](https://github.com/truongbo17/zig-mysql/issues/23) | #22 | In PR — CI pending |
+| B4 | [#23 100k rows, >16 MiB and streaming fault tests](https://github.com/truongbo17/zig-mysql/issues/23) | #22 | Done — [PR #55](https://github.com/truongbo17/zig-mysql/pull/55), [Zig 0.16/0.17 CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38135757213) |
 
 ### Sprint C — Transactions and prepared-statement cache (P1)
 
@@ -721,7 +721,7 @@ replica is **not** proof of completed production acceptance. See
 [release runbook](docs/RELEASE_RUNBOOK.md) and
 [production-readiness gates](docs/PRODUCTION_READINESS.md).
 
-**Next implementation:** Sprint B #20 is implemented and validated in [PR #52](https://github.com/truongbo17/zig-mysql/pull/52); continue with [#21 stored-procedure result iteration](https://github.com/truongbo17/zig-mysql/issues/21) and [#22 prepared binary streaming](https://github.com/truongbo17/zig-mysql/issues/22). Production gate #13 remains open.
+**Next implementation:** Sprint C begins with [#24 savepoint helpers](https://github.com/truongbo17/zig-mysql/issues/24) and [#25 COMMIT/ROLLBACK deadline safety](https://github.com/truongbo17/zig-mysql/issues/25). Sprint B #20–#23 is implemented and tested in PRs #52–#55; independent production gate #13 remains open.
 **Sprint A is complete** (#14–#19, epics #10/#11 closed). Feature PRs may
 continue while the independent OPS release gate #13 remains open.
 
