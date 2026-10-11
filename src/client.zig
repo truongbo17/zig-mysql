@@ -1072,3 +1072,12 @@ test "parse OK packet and column metadata" {
     defer std.testing.allocator.free(col.name);
     try std.testing.expectEqualStrings("id", col.name);
 }
+
+test "EOF status and more-results flag require valid terminator" {
+    try std.testing.expectEqual(@as(u16, 8), try eofStatus(&.{ 0xfe, 0, 0, 8, 0 }));
+    try std.testing.expectEqual(@as(u16, 0), try eofStatus(&.{ 0xfe, 0, 0, 0, 0 }));
+    try std.testing.expectError(error.Malformed, eofStatus(&.{0xfe}));
+    try std.testing.expectError(error.Malformed, eofStatus(&.{ 0xfe, 0, 0, 8, 0, 0 }));
+    const ok = try parseOk(&.{ 0, 0, 0, 8, 0, 0, 0 });
+    try std.testing.expect(ok.status & server_more_results_exists != 0);
+}
