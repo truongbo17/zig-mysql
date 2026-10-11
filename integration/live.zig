@@ -780,14 +780,15 @@ test "MySQL 8.0 CALL multi-result framing, drain and reuse" {
     var cleanup = try conn.query(io, "DROP PROCEDURE IF EXISTS zig_b1_multi_result");
     cleanup.deinit();
     var created = try conn.query(io,
-        "CREATE PROCEDURE zig_b1_multi_result() BEGIN SELECT 11 AS first_result; SELECT 22 AS second_result; END");
+        "CREATE PROCEDURE zig_b1_multi_result() BEGIN SELECT 11 AS first_result; SELECT 22 AS empty_result WHERE 1=0; SELECT 33 AS third_result; END");
     created.deinit();
 
     var multi = try conn.queryAll(io, "CALL zig_b1_multi_result()");
     defer multi.deinit();
-    try std.testing.expect(multi.items.len >= 3);
+    try std.testing.expect(multi.items.len >= 4);
     try std.testing.expectEqualStrings("11", multi.items[0].value.rows.items[0].values[0].?);
-    try std.testing.expectEqualStrings("22", multi.items[1].value.rows.items[0].values[0].?);
+    try std.testing.expectEqual(@as(usize, 0), multi.items[1].value.rows.items.len);
+    try std.testing.expectEqualStrings("33", multi.items[2].value.rows.items[0].values[0].?);
     try std.testing.expect(multi.items[multi.items.len - 1].value == .ok);
     try conn.ping(io);
 
