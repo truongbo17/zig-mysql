@@ -676,6 +676,7 @@ pub const Client = struct {
     /// Execute with positional, typed parameters. Results use the binary row protocol.
     pub fn execute(self: *Client, io: std.Io, statement: Statement, params: []const Param) !Result {
         try self.sendExecute(io, statement, params);
+        return self.readResult(io, true);
     }
 
     /// Stream prepared binary rows with one-row lifetime and bounded memory.
@@ -775,7 +776,6 @@ pub const Client = struct {
             self.broken = true;
             return err;
         };
-        return self.readResult(io, true);
     }
 
     /// COM_STMT_CLOSE has no server response.
