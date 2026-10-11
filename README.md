@@ -719,13 +719,41 @@ A confirmed server ERR packet returns `error.ServerError`, and local
 prechecks (active stream, already broken) do not falsely claim an unknown
 server-side outcome. No transaction retry mechanism is introduced.
 
+### Per-session prepared statement LRU (Sprint C3 — issue #26)
+
+Caching is **opt-in** with `Config.statement_cache_capacity` (default 0).
+Call `executeCached(io, sql, params)`; SQL bytes identify the cached handle,
+while parameter values are still bound with the binary protocol.
+
+```zig
+const cfg: mysql.Config = .{
+    .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:3306") },
+    .username = "app", .password = password, .database = "app",
+    .statement_cache_capacity = 32,
+};
+var conn = try mysql.Client.connect(allocator, io, cfg);
+defer conn.deinit(io);
+var result = try conn.executeCached(io, "SELECT value FROM metrics WHERE id=?", &.{.{ .int = 3 }});
+defer result.deinit();
+const stats = conn.statementCacheStats(); // entries, hits, misses, evictions
+```
+
+Cache capacity bounds the number of server-side prepared handles **per
+connection**, not across a pool. LRU eviction sends `COM_STMT_CLOSE`.
+`selectDatabase` explicitly closes all cached handles **before** switching
+schemas; `resetConnection` clears local cache after server reset. The pool
+resets sessions between borrowers, so cache entries never cross a pool
+lease boundary; pooled reuse does **not** preserve prepared handles.
+Standalone `prepare`/`execute`/`closeStatement` remain independent;
+do not assume that a `Statement` survives a reset or reconnect.
+
 ### Sprint C — Transactions and prepared-statement cache (P1)
 
 | Order | Small issue | Dependency | Status |
 | --- | --- | --- | --- |
-| C1 | [#24 Savepoints and transaction helpers](https://github.com/truongbo17/zig-mysql/issues/24) | Existing transaction API | Under PR review — CI pending |
-| C2 | [#25 Bounded COMMIT/ROLLBACK and ambiguous outcomes](https://github.com/truongbo17/zig-mysql/issues/25) | #24 contract | In PR — CI pending |
-| C3 | [#26 Per-connection bounded statement cache](https://github.com/truongbo17/zig-mysql/issues/26) | #20, reset safety | Planned |
+| C1 | [#24 Savepoints and transaction helpers](https://github.com/truongbo17/zig-mysql/issues/24) | Existing transaction API | Done — [PR #56](https://github.com/truongbo17/zig-mysql/pull/56), [Zig CI](https://github.com/truongbo17/zig-mysql/actions/runs/38141738935) |
+| C2 | [#25 Bounded COMMIT/ROLLBACK and ambiguous outcomes](https://github.com/truongbo17/zig-mysql/issues/25) | #24 contract | Done — [PR #57](https://github.com/truongbo17/zig-mysql/pull/57), [Zig CI](https://github.com/truongbo17/zig-mysql/actions/runs/38142540809) |
+| C3 | [#26 Per-connection bounded statement cache](https://github.com/truongbo17/zig-mysql/issues/26) | #20, reset safety | In PR — exact-head CI pending |
 | C4 | [#27 Cache benchmarks and regressions](https://github.com/truongbo17/zig-mysql/issues/27) | #26 | Planned |
 
 ### Sprint D — Observability, batching and high CCU (P2)
@@ -761,7 +789,7 @@ replica is **not** proof of completed production acceptance. See
 [release runbook](docs/RELEASE_RUNBOOK.md) and
 [production-readiness gates](docs/PRODUCTION_READINESS.md).
 
-**Next implementation:** Sprint C begins with [#24 savepoint helpers](https://github.com/truongbo17/zig-mysql/issues/24) and [#25 COMMIT/ROLLBACK deadline safety](https://github.com/truongbo17/zig-mysql/issues/25). Sprint B #20–#23 is implemented and tested in PRs #52–#55; independent production gate #13 remains open.
+**Next implementation:** Complete [#26 per-session statement cache](https://github.com/truongbo17/zig-mysql/issues/26) then [#27 benchmark and regression evidence](https://github.com/truongbo17/zig-mysql/issues/27). C1 #24 and C2 #25 are merged; OPS release gate #13 remains open.
 **Sprint A is complete** (#14–#19, epics #10/#11 closed). Feature PRs may
 continue while the independent OPS release gate #13 remains open.
 
