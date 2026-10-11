@@ -703,12 +703,28 @@ savepoint keeps it active; releasing it does not commit. Transaction
 DDL can implicitly commit in MySQL. No implicit transaction, nested
 transaction abstraction, auto-retry or isolation changes are introduced.
 
+### Bounded transaction completion (Sprint C2 — issue #25)
+
+Use `commitWithTimeout(io, .fromSeconds(5))` or
+`rollbackWithTimeout(io, .fromSeconds(5))` when a network stall must not
+block transaction completion indefinitely. The deadline bounds the **entire
+command and server response**. When transport dies or the deadline expires
+after an attempted completion, both methods return
+`error.TransactionOutcomeUnknown`, set
+`client.transaction_outcome_unknown = true`, and permanently mark the
+connection broken. The COMMIT **may already have succeeded** on MySQL:
+**never automatically retry a COMMIT or replay non-idempotent mutations**.
+Reconcile a durable business transaction ID using a **new** connection.
+A confirmed server ERR packet returns `error.ServerError`, and local
+prechecks (active stream, already broken) do not falsely claim an unknown
+server-side outcome. No transaction retry mechanism is introduced.
+
 ### Sprint C — Transactions and prepared-statement cache (P1)
 
 | Order | Small issue | Dependency | Status |
 | --- | --- | --- | --- |
 | C1 | [#24 Savepoints and transaction helpers](https://github.com/truongbo17/zig-mysql/issues/24) | Existing transaction API | Under PR review — CI pending |
-| C2 | [#25 Bounded COMMIT/ROLLBACK and ambiguous outcomes](https://github.com/truongbo17/zig-mysql/issues/25) | #24 contract | Planned |
+| C2 | [#25 Bounded COMMIT/ROLLBACK and ambiguous outcomes](https://github.com/truongbo17/zig-mysql/issues/25) | #24 contract | In PR — CI pending |
 | C3 | [#26 Per-connection bounded statement cache](https://github.com/truongbo17/zig-mysql/issues/26) | #20, reset safety | Planned |
 | C4 | [#27 Cache benchmarks and regressions](https://github.com/truongbo17/zig-mysql/issues/27) | #26 | Planned |
 

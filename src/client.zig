@@ -355,6 +355,9 @@ pub const Client = struct {
     last_server_error: ?ServerError = null,
     active_stream: bool = false,
     broken: bool = false,
+    /// True when a COMMIT/ROLLBACK was attempted but the server outcome
+    /// could not be verified; only a NEW independent connection can reconcile.
+    transaction_outcome_unknown: bool = false,
     // Populated by Pool only. Standalone clients do not track pool lifecycle.
     pool_created_at: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
     pool_released_at: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
@@ -582,6 +585,35 @@ pub const Client = struct {
     }
 
     /// Deletes a savepoint. Does not commit any SQL changes.
+    /// Bounds the COMPLETE COMMIT exchange. If the client loses its response,
+    /// the server may have committed despite an error on this socket.
+    /// `TransactionOutcomeUnknown` poisons the connection: do not replay SQL.
+    pub fn commitWithTimeout(self: *Client, io: std.Io, timeout: std.Io.Duration) !void {
+        try self.finishTransactionWithTimeout(io, timeout, Client.commit);
+    }
+
+    /// A ROLLBACK with an unread/missing reply also has an unknown outcome.
+    /// Use a NEW session to reconcile state, never silently retry.
+    pub fn rollbackWithTimeout(self: *Client, io: std.Io, timeout: std.Io.Duration) !void {
+        try self.finishTransactionWithTimeout(io, timeout, Client.rollback);
+    }
+
+    fn finishTransactionWithTimeout(self: *Client, io: std.Io, timeout: std.Io.Duration, comptime operation: anytype) !void {
+        if (self.broken) return error.ConnectionBroken;
+        if (self.active_stream) return error.RowsNotConsumed;
+        self.withTimeout(void, io, timeout, operation, .{ self, io }) catch |err| {
+            // A valid server ERR packet explicitly rejected the operation.
+            // A timer/transport failure after sending is ambiguous, even if
+            // the server finished and its reply was merely lost.
+            if (err == error.QueryTimeout or (self.broken and err != error.ServerError)) {
+                self.broken = true;
+                self.transaction_outcome_unknown = true;
+                return error.TransactionOutcomeUnknown;
+            }
+            return err;
+        };
+    }
+
     pub fn releaseSavepoint(self: *Client, io: std.Io, name: []const u8) !void {
         try self.runSavepointCommand(io, "RELEASE SAVEPOINT ", name);
     }

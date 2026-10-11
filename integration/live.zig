@@ -1143,3 +1143,52 @@ test "MySQL C1 savepoint rollback nesting invalid name and reset" {
     var drop = try conn.query(io, "DROP TABLE zig_c1_savepoint");
     drop.deinit();
 }
+
+test "MySQL C2 timed COMMIT ROLLBACK and uncertain-outcome protection" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const cfg: mysql.Config = .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest", .password = "zig_mysql_test", .database = "zigtest",
+    };
+    var client = try mysql.Client.connect(std.testing.allocator, io, cfg);
+    defer client.deinit(io);
+    var setup = try client.query(io, "CREATE TABLE IF NOT EXISTS zig_c2_tx (id INT PRIMARY KEY)");
+    setup.deinit();
+    var clean = try client.query(io, "DELETE FROM zig_c2_tx WHERE id BETWEEN 900100 AND 900110");
+    clean.deinit();
+    try client.begin(io);
+    var ins = try client.query(io, "INSERT INTO zig_c2_tx VALUES (900100)");
+    ins.deinit();
+    try client.commitWithTimeout(io, .fromSeconds(3));
+    try std.testing.expect(!client.transaction_outcome_unknown);
+    try client.begin(io);
+    var rollback_insert = try client.query(io, "INSERT INTO zig_c2_tx VALUES (900101)");
+    rollback_insert.deinit();
+    try client.rollbackWithTimeout(io, .fromSeconds(3));
+    var count = try client.query(io, "SELECT COUNT(*) FROM zig_c2_tx WHERE id BETWEEN 900100 AND 900101");
+    try std.testing.expectEqualStrings("1", count.value.rows.items[0].values[0].?);
+    count.deinit();
+
+    // Force a lost transport before transaction completion: no COMMIT retry.
+    var victim = try mysql.Client.connect(std.testing.allocator, io, cfg);
+    defer victim.deinit(io);
+    try victim.begin(io);
+    var victim_insert = try victim.query(io, "INSERT INTO zig_c2_tx VALUES (900102)");
+    victim_insert.deinit();
+    var id_result = try victim.query(io, "SELECT CONNECTION_ID()");
+    const id = try std.fmt.parseInt(u64, id_result.value.rows.items[0].values[0].?, 10);
+    id_result.deinit();
+    const sql = try std.fmt.allocPrint(std.testing.allocator, "KILL CONNECTION {d}", .{id});
+    defer std.testing.allocator.free(sql);
+    var killed = try client.query(io, sql);
+    killed.deinit();
+    _ = victim.commitWithTimeout(io, .fromMilliseconds(500)) catch |err| {
+        try std.testing.expect(err == error.TransactionOutcomeUnknown or err == error.ConnectionBroken);
+    };
+    try std.testing.expect(victim.broken);
+    try std.testing.expectError(error.ConnectionBroken, victim.ping(io));
+    var cleanup = try client.query(io, "DROP TABLE zig_c2_tx");
+    cleanup.deinit();
+}
