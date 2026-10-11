@@ -131,7 +131,7 @@ pub const ProcedureResults = struct {
         }
         // A server error in a later part is not evidence that all procedure
         // packets have been consumed. Fail closed rather than desynchronize.
-        var part = self.client.readResultPart(io, false) catch |err| {
+        const part = self.client.readResultPart(io, false) catch |err| {
             self.client.broken = true;
             return err;
         };
