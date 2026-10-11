@@ -10,6 +10,9 @@ const client_transactions: u32 = 1 << 13;
 const client_secure_connection: u32 = 1 << 15;
 const client_plugin_auth: u32 = 1 << 19;
 const client_ssl: u32 = 1 << 11;
+const client_multi_results: u32 = 1 << 17;
+const client_ps_multi_results: u32 = 1 << 18;
+const server_more_results_exists: u16 = 0x0008;
 
 pub const Address = union(enum) {
     ip: std.Io.net.IpAddress,
@@ -97,6 +100,23 @@ pub const Result = struct {
     }
 };
 
+/// Buffered response containing every result part of a CALL (rows and OKs).
+/// Each item owns its arena independently; always call deinit.
+pub const MultiResult = struct {
+    allocator: std.mem.Allocator,
+    items: []Result,
+
+    pub fn deinit(self: *MultiResult) void {
+        for (self.items) |*item| item.deinit();
+        self.allocator.free(self.items);
+    }
+};
+
+const ResultPart = struct {
+    result: Result,
+    more: bool,
+};
+
 /// Text rows arrive one packet at a time. A row's values remain valid until
 /// the next call to `next` or `deinit`. Always call `deinit` to drain leftovers.
 pub const RowStream = struct {
@@ -122,8 +142,19 @@ pub const RowStream = struct {
             return self.client.serverFailure(packet);
         }
         if (isEof(packet)) {
+            const status = eofStatus(packet) catch |err| {
+                self.client.broken = true;
+                return err;
+            };
             self.done = true;
             self.client.active_stream = false;
+            // The old streaming API represents exactly one resultset. Drain
+            // additional parts before reporting them, never leave unread data
+            // queued for the next pooled borrower.
+            if (status & server_more_results_exists != 0) {
+                try self.client.drainRemaining(io, false);
+                return error.MultipleResults;
+            }
             return null;
         }
         errdefer self.client.broken = true;
@@ -269,6 +300,7 @@ pub const Client = struct {
         if (hello.capabilities & required != required) return error.UnsupportedServer;
 
         const flags = (required | client_transactions |
+            client_multi_results | client_ps_multi_results |
             (if (config.tls != null) client_ssl else @as(u32, 0)) |
             (if (config.database.len > 0) client_connect_with_db else @as(u32, 0))) & hello.capabilities;
         if (config.tls != null and flags & client_ssl == 0) return error.TlsUnsupported;
@@ -425,6 +457,14 @@ pub const Client = struct {
     pub fn query(self: *Client, io: std.Io, sql: []const u8) !Result {
         try self.command(io, 0x03, sql);
         return self.readResult(io, false);
+    }
+
+    /// Buffer every result part (including terminal OK packets) of a CALL.
+    /// Multi-statements remain disabled: this does not authorize SQL strings
+    /// containing multiple independent statements.
+    pub fn queryAll(self: *Client, io: std.Io, sql: []const u8) !MultiResult {
+        try self.command(io, 0x03, sql);
+        return self.readAllResults(io, false);
     }
 
     /// Stream a SELECT result without buffering all rows.
@@ -609,7 +649,80 @@ pub const Client = struct {
         statement.closed = true;
     }
 
+    // Legacy APIs return one result. Explicitly discard and report additional
+    // parts instead of silently handing a desynchronized socket to the pool.
     fn readResult(self: *Client, io: std.Io, binary: bool) !Result {
+        var part = try self.readResultPart(io, binary);
+        if (!part.more) return part.result;
+        part.result.deinit();
+        try self.drainRemaining(io, binary);
+        return error.MultipleResults;
+    }
+
+    fn readAllResults(self: *Client, io: std.Io, binary: bool) !MultiResult {
+        var results: std.ArrayList(Result) = .empty;
+        errdefer {
+            for (results.items) |*item| item.deinit();
+            results.deinit(self.allocator);
+        }
+        // Bound untrusted result-part counts; buffered SQL rows are still
+        // subject to the application query/memory budget as before.
+        while (results.items.len < 256) {
+            var part = try self.readResultPart(io, binary);
+            results.append(self.allocator, part.result) catch |err| {
+                part.result.deinit();
+                self.broken = true;
+                return err;
+            };
+            if (!part.more) {
+                const owned = results.toOwnedSlice(self.allocator) catch |err| {
+                    self.broken = true;
+                    return err;
+                };
+                return .{ .allocator = self.allocator, .items = owned };
+            }
+        }
+        self.broken = true;
+        return error.TooManyResults;
+    }
+
+    // After the first result was returned by a legacy API, consume any
+    // subsequent rows/OKs with O(1) row memory. Do not lose a later SQL
+    // error; on ambiguous framing or I/O failure permanently poison the socket.
+    fn drainRemaining(self: *Client, io: std.Io, binary: bool) !void {
+        errdefer self.broken = true;
+        for (0..256) |_| {
+            if (!(try self.discardResultPart(io, binary))) return;
+        }
+        return error.TooManyResults;
+    }
+
+    fn discardResultPart(self: *Client, io: std.Io, binary: bool) !bool {
+        _ = binary; // EOF is unambiguous for both text and binary row framing.
+        const first = try self.wire.read(io);
+        defer self.allocator.free(first);
+        if (first.len == 0) return error.Malformed;
+        if (first[0] == 0xff) return self.serverFailure(first);
+        if (first[0] == 0x00) {
+            const ok = try parseOk(first);
+            return ok.status & server_more_results_exists != 0;
+        }
+        if (first[0] == 0xfb) return error.LocalInfileDisabled;
+        var counter = protocol.Cursor{ .bytes = first };
+        const n64 = (try counter.lenInt()) orelse return error.Malformed;
+        if (n64 == 0 or n64 > 4096 or counter.pos != first.len) return error.Malformed;
+        for (0..@as(usize, @intCast(n64))) |_| try self.discardPacket(io);
+        try self.expectEof(io);
+        while (true) {
+            const packet = try self.wire.read(io);
+            defer self.allocator.free(packet);
+            if (packet.len == 0) return error.Malformed;
+            if (packet[0] == 0xff) return self.serverFailure(packet);
+            if (isEof(packet)) return (try eofStatus(packet)) & server_more_results_exists != 0;
+        }
+    }
+
+    fn readResultPart(self: *Client, io: std.Io, binary: bool) !ResultPart {
         const first = self.wire.read(io) catch |err| {
             self.broken = true;
             return err;
@@ -624,12 +737,16 @@ pub const Client = struct {
         var arena = std.heap.ArenaAllocator.init(self.allocator);
         errdefer arena.deinit();
         if (first[0] == 0x00) {
-            return .{ .arena = arena, .value = .{ .ok = try parseOk(first) } };
+            const ok = try parseOk(first);
+            return .{
+                .result = .{ .arena = arena, .value = .{ .ok = ok } },
+                .more = ok.status & server_more_results_exists != 0,
+            };
         }
         if (first[0] == 0xfb) return error.LocalInfileDisabled;
         var counter = protocol.Cursor{ .bytes = first };
         const n64 = (try counter.lenInt()) orelse return error.Malformed;
-        if (n64 == 0 or n64 > 4096) return error.Malformed;
+        if (n64 == 0 or n64 > 4096 or counter.pos != first.len) return error.Malformed;
         const n: usize = @intCast(n64);
         const a = arena.allocator();
         const columns = try a.alloc(Column, n);
@@ -641,13 +758,22 @@ pub const Client = struct {
         }
         const metadata_end = try self.wire.read(io);
         defer self.allocator.free(metadata_end);
-        if (!isEof(metadata_end)) return error.Malformed;
+        _ = try eofStatus(metadata_end);
         var rows: std.ArrayList(Row) = .empty;
         while (true) {
             const packet = try self.wire.read(io);
             defer self.allocator.free(packet);
             if (packet.len > 0 and packet[0] == 0xff) return self.serverFailure(packet);
-            if (isEof(packet)) break;
+            if (isEof(packet)) {
+                const status = try eofStatus(packet);
+                return .{
+                    .result = .{ .arena = arena, .value = .{ .rows = .{
+                        .columns = columns,
+                        .items = try rows.toOwnedSlice(a),
+                    } } },
+                    .more = status & server_more_results_exists != 0,
+                };
+            }
             var c = protocol.Cursor{ .bytes = packet };
             const values = try a.alloc(?[]const u8, n);
             if (binary) {
@@ -669,10 +795,6 @@ pub const Client = struct {
             if (c.pos != packet.len) return error.Malformed;
             try rows.append(a, .{ .values = values });
         }
-        return .{ .arena = arena, .value = .{ .rows = .{
-            .columns = columns,
-            .items = try rows.toOwnedSlice(a),
-        } } };
     }
 
     fn discardPacket(self: *Client, io: std.Io) !void {
@@ -841,6 +963,11 @@ fn appendLenString(out: *std.ArrayList(u8), allocator: std.mem.Allocator, text: 
 
 fn isEof(packet: []const u8) bool {
     return packet.len > 0 and packet.len < 9 and packet[0] == 0xfe;
+}
+
+fn eofStatus(packet: []const u8) !u16 {
+    if (!isEof(packet) or packet.len != 5) return error.Malformed;
+    return @as(u16, packet[3]) | (@as(u16, packet[4]) << 8);
 }
 
 fn parseOk(packet: []const u8) !Ok {
