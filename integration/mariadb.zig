@@ -668,3 +668,26 @@ test "MariaDB C2 timed COMMIT ROLLBACK and uncertain-outcome protection" {
     var cleanup = try client.query(io, "DROP TABLE zig_c2_tx");
     cleanup.deinit();
 }
+
+test "C2 deadline race returns success or unknown, never a reusable ambiguous socket" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33308") },
+        .username = "zigtest", .password = "zig_mysql_test", .database = "zigtest",
+    });
+    defer conn.deinit(io);
+    try conn.begin(io);
+    const result = conn.commitWithTimeout(io, .fromNanoseconds(1));
+    if (result) |_| {
+        try std.testing.expect(!conn.broken);
+        try std.testing.expect(!conn.transaction_outcome_unknown);
+        try conn.ping(io);
+    } else |err| {
+        try std.testing.expectEqual(error.TransactionOutcomeUnknown, err);
+        try std.testing.expect(conn.broken);
+        try std.testing.expect(conn.transaction_outcome_unknown);
+        try std.testing.expectError(error.ConnectionBroken, conn.ping(io));
+    }
+}
