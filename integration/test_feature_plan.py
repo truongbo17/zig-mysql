@@ -38,7 +38,12 @@ class RoadmapCoverageTests(unittest.TestCase):
             self.assertIn("/pull/", rows[0])
             self.assertNotIn("Planned", rows[0])
             self.assertNotIn("In progress", rows[0])
-        self.assertIn("Sprint B starts at [#20", readme)
+        sprint_b = readme.split("### Sprint B —", 1)[1].split("### Sprint C —", 1)[0]
+        b1 = [line for line in sprint_b.splitlines()
+              if line.startswith("| B1 |") and "/issues/20)" in line]
+        self.assertEqual(len(b1), 1)
+        self.assertIn("Done", b1[0])
+        self.assertIn("/pull/52", b1[0])
         self.assertIn("24-hour soak", readme)
         self.assertIn("NOT yet passed", readme)
 
