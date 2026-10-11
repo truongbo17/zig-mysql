@@ -245,6 +245,36 @@ Unlike streaming text rows, a buffered prepared row is valid until
 retain the original session timezone for TIMESTAMP, and this layer never
 automatically retries SQL or changes charset.
 
+## Streaming prepared binary rows (Sprint B3, issue #22)
+
+Use `executeRows(io, statement, params)` when a prepared `SELECT`
+may return many rows. It reuses the existing `RowStream` ownership
+contract and returns decoded binary-protocol values as nullable byte
+slices, with column type metadata in `stream.columns`.
+`RowStream.binary` distinguishes prepared binary results from text
+results. Each row is borrowed and expires on the next `next(io)` or
+`deinit(io)` call; copy values if you must retain them. No server cursor
+is requested, and there is no automatic query retry.
+
+```zig
+var stmt = try client.prepare(io, "SELECT id, data FROM events WHERE id > ?");
+defer client.closeStatement(io, &stmt) catch {};
+var stream = try client.executeRows(io, stmt, &.{.{ .int = 100 }});
+defer stream.deinit(io);
+while (try stream.nextWithTimeout(io, .fromSeconds(5))) |row| {
+    // Any SQL NULL remains null; BLOB bytes retain NUL and non-UTF8.
+    _ = row.values;
+}
+```
+
+Use `executeRowsWithTimeout(io, statement, params, duration)` to bound
+execution and initial result metadata; use `RowStream.nextWithTimeout`
+for a separate deadline on each row. `deinit(io)` drains the unread
+rows when the connection is healthy, while `abandon()` poisons it
+without I/O. On any cancellation or malformed response, discard the
+connection rather than returning it as reusable. `execute()` continues
+to return buffered binary results; the new API is additive.
+
 ## Connection pooling
 
 `Pool` limits the number of live MySQL connections and waits when all connections
@@ -624,7 +654,7 @@ Epic tracker: [#12 Multiple results and prepared streaming](https://github.com/t
 | --- | --- | --- | --- |
 | B1 | [#20 Multi-result framing and safe drain](https://github.com/truongbo17/zig-mysql/issues/20) | — first in Sprint B | Done — [PR #52](https://github.com/truongbo17/zig-mysql/pull/52), [Zig 0.16/0.17 full CI PASS](https://github.com/truongbo17/zig-mysql/actions/runs/38116254824) |
 | B2 | [#21 Stored procedure CALL resultsets](https://github.com/truongbo17/zig-mysql/issues/21) | #20 | In PR — CI pending |
-| B3 | [#22 Prepared binary row streaming API](https://github.com/truongbo17/zig-mysql/issues/22) | #20 | Planned |
+| B3 | [#22 Prepared binary row streaming API](https://github.com/truongbo17/zig-mysql/issues/22) | #20 | In progress — CI pending |
 | B4 | [#23 100k rows, >16 MiB and streaming fault tests](https://github.com/truongbo17/zig-mysql/issues/23) | #22 | Planned |
 
 ### Sprint C — Transactions and prepared-statement cache (P1)
