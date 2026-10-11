@@ -62,6 +62,21 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Benchmark pooled MySQL queries on localhost:33306");
     bench_step.dependOn(&run_bench.step);
 
+    const cache_bench_module = b.createModule(.{
+        .root_source_file = b.path("bench/cache.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    cache_bench_module.addImport("zig_mysql", module);
+    const cache_bench_exe = b.addExecutable(.{
+        .name = "zig-mysql-statement-cache-bench",
+        .root_module = cache_bench_module,
+    });
+    const run_cache_bench = b.addRunArtifact(cache_bench_exe);
+    run_cache_bench.has_side_effects = true;
+    const cache_bench_step = b.step("cache-bench", "Benchmark prepared cache off/on across 1/8/32 workers");
+    cache_bench_step.dependOn(&run_cache_bench.step);
+
     const soak_module = b.createModule(.{
         .root_source_file = b.path("integration/soak_local.zig"),
         .target = target,
