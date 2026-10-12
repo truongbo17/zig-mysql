@@ -106,7 +106,24 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
     docker cp "$name":/var/lib/mysql/ca.pem "$ca_file"
     zig build tls-integration
     if [[ "$(uname -s)" == Linux ]]; then
-      timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast high-ccu-tls-bench
+      MALLOC_CHECK_=3 timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast high-ccu-tls-no-deadline-bench
+      if ! command -v gdb >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+        echo "TLS_DIAGNOSTIC: installing gdb for a stack trace"
+        sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gdb
+      fi
+      if command -v gdb >/dev/null 2>&1; then
+        zig build -Doptimize=ReleaseFast
+        echo "TLS_GDB_BEGIN: timed 128-CCU matrix under debugger"
+        if ! MALLOC_CHECK_=3 timeout 180s gdb --batch --return-child-result \
+          -ex "set pagination off" -ex "run" \
+          -ex "thread apply all bt 14" \
+          --args ./zig-out/bin/zig-mysql-high-ccu-tls-bench; then
+          echo "TLS_GDB_NONZERO: preserve trace; subsequent profiler is the enforcement gate" >&2
+        fi
+      else
+        echo "TLS_GDB_UNAVAILABLE: debugger not installed" >&2
+      fi
+      MALLOC_CHECK_=3 timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast high-ccu-tls-bench
     fi
   fi
   if [[ "$(uname -s)" == Linux ]]; then

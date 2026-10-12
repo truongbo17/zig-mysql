@@ -69,6 +69,11 @@ def main():
             time.sleep(0.1)
         output = proc.stdout.read().decode("utf-8", errors="replace")
         sys.stdout.write(output)
+        # glibc allocator may log a fatal heap error in a worker even when
+        # the parent process exits zero. This MUST fail diagnostics.
+        fatal_markers = ("double free or corruption", "malloc():", "corrupted size vs.", "free(): invalid pointer", "signal SEGV", "Segmentation fault")
+        if any(marker in output for marker in fatal_markers):
+            raise SystemExit("FATAL: heap corruption/segfault marker found in benchmark output")
         print(f"D4_PROFILE samples={observed} peak_rss_kb={peak_rss_kb} peak_fds={peak_fds}")
         if proc.returncode != 0:
             raise SystemExit(proc.returncode)

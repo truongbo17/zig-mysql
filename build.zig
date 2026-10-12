@@ -133,10 +133,29 @@ pub fn build(b: *std.Build) void {
         .name = "zig-mysql-high-ccu-tls-bench",
         .root_module = ccu_tls_module,
     });
+    // Diagnostic checkout can run the same binary under gdb.
+    b.installArtifact(ccu_tls_exe);
     const run_ccu_tls = b.addRunArtifact(ccu_tls_exe);
     run_ccu_tls.has_side_effects = true;
     const ccu_tls_step = b.step("high-ccu-tls-bench", "Run 1/8/32/64/128-CCU verified TLS matrix");
     ccu_tls_step.dependOn(&run_ccu_tls.step);
+
+    const tls_no_deadline_module = b.createModule(.{
+        .root_source_file = b.path("bench/high_ccu_tls_no_deadline.zig"),
+        .target = target, .optimize = optimize,
+    });
+    tls_no_deadline_module.addImport("zig_mysql", module);
+    const tls_no_deadline_exe = b.addExecutable(.{
+        .name = "zig-mysql-high-ccu-tls-no-deadline",
+        .root_module = tls_no_deadline_module,
+    });
+    const run_tls_no_deadline = b.addRunArtifact(tls_no_deadline_exe);
+    run_tls_no_deadline.has_side_effects = true;
+    const tls_no_deadline_step = b.step(
+        "high-ccu-tls-no-deadline-bench",
+        "Diagnostic verified TLS CCU without per-query deadline Select",
+    );
+    tls_no_deadline_step.dependOn(&run_tls_no_deadline.step);
 
     const soak_module = b.createModule(.{
         .root_source_file = b.path("integration/soak_local.zig"),
