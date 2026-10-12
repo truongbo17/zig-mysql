@@ -501,7 +501,7 @@ pub const Client = struct {
     }
 
     pub fn ping(self: *Client, io: std.Io) !void {
-        const started = if (self.command_metrics != null) std.Io.Clock.awake.now(io) else null;
+        const started = if (self.command_metrics != null and !self.metrics_suppressed) std.Io.Clock.awake.now(io) else null;
         var outcome: metrics.Outcome = .success;
         defer self.observeCommand(io, started, .ping, outcome);
         self.command(io, 0x0e, "") catch |err| { outcome = classifyMetricError(err); return err; };
@@ -709,7 +709,7 @@ pub const Client = struct {
     }
 
     pub fn query(self: *Client, io: std.Io, sql: []const u8) !Result {
-        const started = if (self.command_metrics != null) std.Io.Clock.awake.now(io) else null;
+        const started = if (self.command_metrics != null and !self.metrics_suppressed) std.Io.Clock.awake.now(io) else null;
         var outcome: metrics.Outcome = .success;
         defer self.observeCommand(io, started, self.metrics_command_override orelse .query, outcome);
         self.command(io, 0x03, sql) catch |err| { outcome = classifyMetricError(err); return err; };
@@ -910,7 +910,7 @@ pub const Client = struct {
 
     /// Execute with positional, typed parameters. Results use the binary row protocol.
     pub fn execute(self: *Client, io: std.Io, statement: Statement, params: []const Param) !Result {
-        const started = if (self.command_metrics != null) std.Io.Clock.awake.now(io) else null;
+        const started = if (self.command_metrics != null and !self.metrics_suppressed) std.Io.Clock.awake.now(io) else null;
         var outcome: metrics.Outcome = .success;
         defer self.observeCommand(io, started, .prepared, outcome);
         self.sendExecute(io, statement, params) catch |err| { outcome = classifyMetricError(err); return err; };
