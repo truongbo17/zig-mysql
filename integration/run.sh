@@ -114,10 +114,12 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
       if command -v gdb >/dev/null 2>&1; then
         zig build -Doptimize=ReleaseFast
         echo "TLS_GDB_BEGIN: timed 128-CCU matrix under debugger"
-        MALLOC_CHECK_=3 timeout 180s gdb --batch --return-child-result \
+        if ! MALLOC_CHECK_=3 timeout 180s gdb --batch --return-child-result \
           -ex "set pagination off" -ex "run" \
           -ex "thread apply all bt 14" \
-          --args ./zig-out/bin/zig-mysql-high-ccu-tls-bench
+          --args ./zig-out/bin/zig-mysql-high-ccu-tls-bench; then
+          echo "TLS_GDB_NONZERO: preserve trace; subsequent profiler is the enforcement gate" >&2
+        fi
       else
         echo "TLS_GDB_UNAVAILABLE: debugger not installed" >&2
       fi
