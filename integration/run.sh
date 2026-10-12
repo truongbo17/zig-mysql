@@ -107,6 +107,16 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
     zig build tls-integration
     if [[ "$(uname -s)" == Linux ]]; then
       MALLOC_CHECK_=3 timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast high-ccu-tls-no-deadline-bench
+      if command -v gdb >/dev/null 2>&1; then
+        zig build -Doptimize=ReleaseFast
+        echo "TLS_GDB_BEGIN: timed 128-CCU matrix under debugger"
+        MALLOC_CHECK_=3 timeout 180s gdb --batch --return-child-result \
+          -ex "set pagination off" -ex "run" \
+          -ex "thread apply all bt 14" \
+          --args ./zig-out/bin/zig-mysql-high-ccu-tls-bench
+      else
+        echo "TLS_GDB_UNAVAILABLE: debugger not installed" >&2
+      fi
       MALLOC_CHECK_=3 timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast high-ccu-tls-bench
     fi
   fi
