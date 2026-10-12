@@ -118,13 +118,17 @@ pub const Session = struct {
             const count: c_int = @intCast(@min(destination.len - used, std.math.maxInt(c_int)));
             const n = SSL_read(self.ssl, destination[used..].ptr, count);
             if (n <= 0) {
-                switch (SSL_get_error(self.ssl, n)) {
+                const ssl_error = SSL_get_error(self.ssl, n);
+                switch (ssl_error) {
                     2, 3 => {
                         try std.Io.sleep(io, .fromMilliseconds(1), .awake);
                         continue;
                     },
                     6 => return error.EndOfStream, // SSL_ERROR_ZERO_RETURN
-                    else => return error.TlsReadFailed,
+                    else => {
+                        std.log.err("TLS_DIAG SSL_read n={d} ssl_error={d}", .{ n, ssl_error });
+                        return error.TlsReadFailed;
+                    },
                 }
             }
             used += @intCast(n);
