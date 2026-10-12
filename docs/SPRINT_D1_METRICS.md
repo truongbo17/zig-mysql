@@ -1,9 +1,9 @@
 # Sprint D1 — Command telemetry foundation
 
 This PR introduces a **low-cardinality, allocation-free per-connection recorder**
-as an initial building block for issue #28. It does not yet instrument the
-Client command lifecycle, export cumulative Prometheus histograms, or establish
-a disabled-path overhead baseline. **Keep #28 open.**
+as an initial building block for issue #28. It now instruments opt-in buffered `query`, `execute`, and `ping`, and can
+export cumulative Prometheus histograms. Other command paths and the
+disabled-path overhead baseline remain outstanding. **Keep #28 open.**
 
 ## Contract
 
@@ -12,8 +12,8 @@ a disabled-path overhead baseline. **Keep #28 open.**
 - One outcome count and one latency histogram observation per explicit
   `record` call; duration is measured externally by a monotonic clock,
   expressed in microseconds.
-- Buckets are **disjoint**, not cumulative. An aggregator must calculate
-  cumulative Prometheus buckets during exposition.
+- Internal buckets are **disjoint**; `formatPrometheus()` emits cumulative
+  Prometheus buckets and caller-owned memory.
 - Recorder is a single-borrower value, **not thread-safe**; external merging
   or publication requires synchronization.
 - Saturating counters avoid wraparound during long-running processes.
@@ -21,13 +21,14 @@ a disabled-path overhead baseline. **Keep #28 open.**
 
 ## Acceptance status / next implementation
 
-1. [x] Fixed vocabulary and bounded histogram recording with boundary tests.
+1. [x] Fixed vocabulary, saturating counters, histogram boundaries and exporter tests.
 2. [ ] Zig 0.16 and 0.17 CI against the exact PR head (not runnable in the
    editing environment); any compile failure blocks merge.
-3. [ ] Integrate optional instrumentation at the common command I/O boundary,
-   ensuring a single terminal outcome on timeout, cancellation and error.
-4. [ ] Add concurrency-safe snapshot aggregation and Prometheus export, with
-   fixed labels only.
+3. [ ] Extend instrumentation beyond buffered query/execute/ping to command
+   deadlines, transaction ambiguity, prepared streams and CALL. Ensure exactly
+   one terminal outcome for each command without double-counting timeout wrappers.
+4. [x] Add caller-owned fixed-label Prometheus exposition.
+   [ ] Add concurrency-safe snapshot aggregation.
 5. [ ] Test command errors, interrupted streams, ambiguous COMMIT outcomes,
    and multithreaded aggregation against MySQL and MariaDB.
 6. [ ] Benchmark disabled instrumentation overhead and confirm no SQL or
