@@ -325,6 +325,42 @@ covered by the buffered latency histogram; see
 [scope and limitations](docs/SPRINT_D1_METRICS.md). Benchmarks comparing
 enabled and disabled hooks use `zig build -Doptimize=ReleaseFast metrics-bench`.
 
+## Bounded prepared DML batches (Sprint D2, issue #29)
+
+`mysql.Batch.execute(&conn, io, statement, rows, &progress, .{})` is an
+opt-in sequential batch for one prepared DML statement. It prevalidates
+the **entire batch** before sending its first packet: number of rows
+(default limit 1,000), parameter counts and types, and the encoded
+`COM_STMT_EXECUTE` payload size (default limit 1 MiB per row). It
+does not use `LOCAL INFILE`, synthesize SQL, retry writes, or implicitly
+BEGIN/COMMIT/ROLLBACK. Calls remain one network round trip per row.
+
+```zig
+const values = [_][]const mysql.Param{
+    &.{ .{ .int = 1 }, .{ .text = "Hà Nội" } },
+    &.{ .{ .int = 2 }, .{ .text = "Đà Nẵng" } },
+};
+var progress: mysql.Batch.Progress = .{};
+try conn.begin(io);
+mysql.Batch.execute(&conn, io, stmt, &values, &progress, .{}) catch |err| {
+    conn.rollback(io) catch {};
+    return err; // reconcile uncertain outcomes after transport failures
+};
+try conn.commit(io);
+```
+
+`progress.completed` counts *acknowledged* executions only. A later
+database constraint error may leave earlier rows applied unless an explicit
+transaction is rolled back; transport interruption can leave additional
+unacknowledged writes of uncertain outcome. See
+[batch safety contract](docs/SPRINT_D2_BATCH.md).
+
+The real-server `zig build -Doptimize=ReleaseFast batch-bench` compares
+256 individual prepared `execute` calls against 256 batch executions. CI
+runner diagnostics varied: Zig 0.16 batch/single throughput ratio **1.101**;
+Zig 0.17 **0.945**. This helper does **not** promise better throughput
+than single executes; it primarily adds validation and failure visibility.
+
 ## Connection pooling
 
 `Pool` limits the number of live MySQL connections and waits when all connections
@@ -807,7 +843,7 @@ path on the GitHub runner; do not use these values as production SLAs.
 | Order | Small issue | Dependency | Status |
 | --- | --- | --- | --- |
 | D1 | [#28 Per-command metrics and latency hooks](https://github.com/truongbo17/zig-mysql/issues/28) | Existing Pool Stats | In review ([PR #60](https://github.com/truongbo17/zig-mysql/pull/60)); not complete |
-| D2 | [#29 Safe batch prepared execute/bulk insert](https://github.com/truongbo17/zig-mysql/issues/29) | Sprint A prepared types | Planned |
+| D2 | [#29 Safe batch prepared execute/bulk insert](https://github.com/truongbo17/zig-mysql/issues/29) | Sprint A prepared types | Implemented, CI review ([PR #61](https://github.com/truongbo17/zig-mysql/pull/61)) |
 | D3 | [#30 Native TLS readiness waits](https://github.com/truongbo17/zig-mysql/issues/30) | Cancellation safety | Planned |
 | D4 | [#31 1–128 worker TLS/CCU benchmarks](https://github.com/truongbo17/zig-mysql/issues/31) | #28, #30 | Planned |
 

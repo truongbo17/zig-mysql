@@ -748,3 +748,46 @@ test "MariaDB C3 bounded cached prepares LRU schema reset and pool isolation" {
     q.deinit();
     pool.release(io, another);
 }
+
+test "MariaDB bounded prepared batch preflight and transactional partial failure" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33308") },
+        .username = "zigtest", .password = "zig_mysql_test", .database = "zigtest",
+    });
+    defer conn.deinit(io);
+    var created = try conn.query(io, "CREATE TEMPORARY TABLE zig_batch_fixture (id INT PRIMARY KEY, label VARCHAR(200))");
+    created.deinit();
+    var stmt = try conn.prepare(io, "INSERT INTO zig_batch_fixture VALUES (?, ?)");
+    defer conn.closeStatement(io, &stmt) catch {};
+
+    const first = [_]mysql.Param{ .{ .int = 1 }, .{ .text = "việt nam" } };
+    const second = [_]mysql.Param{ .{ .int = 2 }, .{ .text = "two" } };
+    const large = [_]mysql.Param{ .{ .int = 3 }, .{ .text = "payload" } };
+    const valid = [_][]const mysql.Param{ &first, &second };
+    var progress: mysql.Batch.Progress = .{};
+    try std.testing.expectError(error.BatchPacketTooLarge,
+        mysql.Batch.execute(&conn, io, stmt, &.{ &first, &large }, &progress, .{ .max_packet_bytes = 20 }));
+    try std.testing.expectEqual(@as(usize, 0), progress.completed);
+    try conn.begin(io);
+    try mysql.Batch.execute(&conn, io, stmt, &valid, &progress, .{});
+    try std.testing.expectEqual(@as(usize, 2), progress.completed);
+    try std.testing.expectEqual(@as(u64, 2), progress.affected_rows);
+    try conn.rollback(io);
+    var count = try conn.query(io, "SELECT COUNT(*) FROM zig_batch_fixture");
+    try std.testing.expectEqualStrings("0", count.value.rows.items[0].values[0].?);
+    count.deinit();
+
+    const duplicate = [_]mysql.Param{ .{ .int = 1 }, .{ .text = "duplicate" } };
+    const fails = [_][]const mysql.Param{ &first, &duplicate, &second };
+    try conn.begin(io);
+    try std.testing.expectError(error.ServerError,
+        mysql.Batch.execute(&conn, io, stmt, &fails, &progress, .{}));
+    try std.testing.expectEqual(@as(usize, 1), progress.completed);
+    try conn.rollback(io);
+    var final = try conn.query(io, "SELECT COUNT(*) FROM zig_batch_fixture");
+    try std.testing.expectEqualStrings("0", final.value.rows.items[0].values[0].?);
+    final.deinit();
+}
