@@ -91,6 +91,16 @@ pub const Recorder = struct {
         return buffer.toOwnedSlice(allocator);
     }
 
+
+    /// Combine a worker-local accumulator into an independent snapshot.
+    pub fn merge(self: *Recorder, other: *const Recorder) void {
+        for (0..command_count) |c| {
+            for (0..outcome_count) |o| self.counts[c][o] +|= other.counts[c][o];
+            for (0..bucket_count) |i| self.buckets[c][i] +|= other.buckets[c][i];
+            self.total_duration_us[c] +|= other.total_duration_us[c];
+        }
+    }
+
     pub fn operations(self: *const Recorder, command: Command) u64 {
         var total: u64 = 0;
         for (self.counts[@intFromEnum(command)]) |n| total +|= n;
@@ -133,4 +143,43 @@ test "Prometheus exposition uses fixed labels and cumulative buckets" {
     try std.testing.expect(std.mem.indexOf(u8, output, "command=\"query\",le=\"100\"} 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "command=\"query\",le=\"250\"} 2") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "zig_mysql_command_duration_us_sum{command=\"query\"} 201") != null);
+}
+
+
+/// Optional shared accumulator. Recorders attached to a Client must remain
+/// borrower-local; aggregate them here only after detaching, or publish a
+/// synchronized snapshot. Never expose its inner Recorder for mutation.
+pub const SharedRecorder = struct {
+    mutex: std.Io.Mutex = .init,
+    value: Recorder = .{},
+
+    pub fn record(self: *SharedRecorder, io: std.Io, command: Command, outcome: Outcome, elapsed_us: u64) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        self.value.record(command, outcome, elapsed_us);
+    }
+
+    pub fn merge(self: *SharedRecorder, io: std.Io, other: *const Recorder) void {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        self.value.merge(other);
+    }
+
+    pub fn snapshot(self: *SharedRecorder, io: std.Io) Recorder {
+        self.mutex.lockUncancelable(io);
+        defer self.mutex.unlock(io);
+        return self.value;
+    }
+};
+
+test "merged telemetry saturates and preserves all outcome and bucket counts" {
+    var lhs: Recorder = .{};
+    var rhs: Recorder = .{};
+    lhs.record(.query, .success, 100);
+    rhs.record(.query, .timeout, 101);
+    rhs.record(.ping, .success, 1000);
+    lhs.merge(&rhs);
+    try std.testing.expectEqual(@as(u64, 2), lhs.operations(.query));
+    try std.testing.expectEqual(@as(u64, 1), lhs.operations(.ping));
+    try std.testing.expectEqual(@as(u64, 201), lhs.total_duration_us[@intFromEnum(Command.query)]);
 }
