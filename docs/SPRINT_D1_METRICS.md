@@ -31,7 +31,8 @@ disabled-path overhead baseline remain outstanding. **Keep #28 open.**
    [ ] Add concurrency-safe snapshot aggregation.
 5. [ ] Test command errors, interrupted streams, ambiguous COMMIT outcomes,
    and multithreaded aggregation against MySQL and MariaDB.
-6. [ ] Benchmark disabled instrumentation overhead and confirm no SQL or
+6. [ ] Run `zig build -Doptimize=ReleaseFast metrics-bench` and assess
+   disabled versus enabled wall-clock/CPU overhead; confirm no SQL or
    parameter bytes leak to metrics output.
 
 This foundation is not production certification: OPS epic #13 stays open.
