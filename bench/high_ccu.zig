@@ -10,6 +10,7 @@ const Worker = struct {
     io: std.Io,
     pool: *mysql.Pool,
     latencies_ns: []u64,
+    use_deadline: bool = true,
     failure: ?anyerror = null,
     fn task(self: *@This()) std.Io.Cancelable!void {
         self.checked() catch |err| {
@@ -23,7 +24,9 @@ const Worker = struct {
             const conn = try self.pool.acquireWithTimeout(self.io, .fromSeconds(10));
             {
                 defer self.pool.release(self.io, conn);
-                var rows = try conn.queryWithTimeout(self.io, "SELECT 1", .fromSeconds(5));
+                var rows = if (self.use_deadline)
+                    try conn.queryWithTimeout(self.io, "SELECT 1", .fromSeconds(5))
+                else try conn.query(self.io, "SELECT 1");
                 defer rows.deinit();
                 if (!std.mem.eql(u8, rows.value.rows.items[0].values[0].?, "1"))
                     return error.InvalidBenchmarkResult;
@@ -52,7 +55,7 @@ fn config(tls: bool) !mysql.Config {
     };
 }
 
-fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !void {
+fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize, use_deadline: bool) !void {
     var pool = try mysql.Pool.init(allocator, .{
         .connection = try config(tls),
         .max_open = pool_limit,
@@ -70,7 +73,8 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
     const began = std.Io.Clock.awake.now(io);
     for (tasks, 0..) |*task, index| {
         task.* = .{ .io = io, .pool = &pool,
-            .latencies_ns = samples[index * iterations ..][0..iterations] };
+            .latencies_ns = samples[index * iterations ..][0..iterations],
+            .use_deadline = use_deadline };
         try group.concurrent(io, Worker.task, .{task});
     }
     try group.await(io);
@@ -85,10 +89,10 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
     const cpu_ms: f64 = if (cpu_after >= cpu_before)
         @as(f64, @floatFromInt(cpu_after - cpu_before)) / 1000.0 else -1.0;
     std.debug.print(
-        "D4_CCU tls={d} workers={d} pool={d} requests={d} req_s={d:.1} " ++
+        "D4_CCU tls={d} deadline={d} workers={d} pool={d} requests={d} req_s={d:.1} " ++
         "p50_ms={d:.3} p95_ms={d:.3} p99_ms={d:.3} cpu_ms={d:.1} " ++
         "created={d} closed={d} wait={d} acquire_timeout={d}\n",
-        .{ @intFromBool(tls), count, pool_limit, samples.len, rate,
+        .{ @intFromBool(tls), @intFromBool(use_deadline), count, pool_limit, samples.len, rate,
             percentile(samples, 50), percentile(samples, 95),
             percentile(samples, 99), cpu_ms,
             stats.connections_created, stats.connections_closed,
@@ -97,7 +101,11 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
 }
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, tls: bool) !void {
-    for (worker_counts) |count| try scenario(allocator, io, tls, count);
+    for (worker_counts) |count| try scenario(allocator, io, tls, count, true);
+}
+
+pub fn runWithoutQueryDeadline(allocator: std.mem.Allocator, io: std.Io, tls: bool) !void {
+    for (worker_counts) |count| try scenario(allocator, io, tls, count, false);
 }
 
 pub fn main(init: std.process.Init) !void {
