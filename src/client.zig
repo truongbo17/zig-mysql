@@ -489,16 +489,16 @@ pub const Client = struct {
         self.command_metrics = recorder;
     }
 
-    fn observeCommand(self: *Client, io: std.Io, started: @TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))), category: metrics.Command, outcome: metrics.Outcome) void {
+    fn observeCommand(self: *Client, io: std.Io, started: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))), category: metrics.Command, outcome: metrics.Outcome) void {
         if (self.command_metrics) |recorder| {
-            const ns = started.untilNow(io, .awake).toNanoseconds();
+            const ns = started.?.untilNow(io, .awake).toNanoseconds();
             const elapsed_us: u64 = @intCast(@max(0, ns) / 1000);
             recorder.record(category, outcome, elapsed_us);
         }
     }
 
     pub fn ping(self: *Client, io: std.Io) !void {
-        const started = std.Io.Clock.awake.now(io);
+        const started = if (self.command_metrics != null) std.Io.Clock.awake.now(io) else null;
         var outcome: metrics.Outcome = .success;
         defer self.observeCommand(io, started, .ping, outcome);
         self.command(io, 0x0e, "") catch |err| { outcome = classifyMetricError(err); return err; };
@@ -687,7 +687,7 @@ pub const Client = struct {
     }
 
     pub fn query(self: *Client, io: std.Io, sql: []const u8) !Result {
-        const started = std.Io.Clock.awake.now(io);
+        const started = if (self.command_metrics != null) std.Io.Clock.awake.now(io) else null;
         var outcome: metrics.Outcome = .success;
         defer self.observeCommand(io, started, .query, outcome);
         self.command(io, 0x03, sql) catch |err| { outcome = classifyMetricError(err); return err; };
@@ -878,7 +878,7 @@ pub const Client = struct {
 
     /// Execute with positional, typed parameters. Results use the binary row protocol.
     pub fn execute(self: *Client, io: std.Io, statement: Statement, params: []const Param) !Result {
-        const started = std.Io.Clock.awake.now(io);
+        const started = if (self.command_metrics != null) std.Io.Clock.awake.now(io) else null;
         var outcome: metrics.Outcome = .success;
         defer self.observeCommand(io, started, .prepared, outcome);
         self.sendExecute(io, statement, params) catch |err| { outcome = classifyMetricError(err); return err; };
