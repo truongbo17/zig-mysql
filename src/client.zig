@@ -3,6 +3,18 @@ const protocol = @import("protocol.zig");
 const auth = @import("auth.zig");
 const temporal = @import("temporal.zig");
 const Wire = @import("wire.zig").Wire;
+const metrics = @import("command_metrics.zig");
+
+fn classifyMetricError(err: anyerror) metrics.Outcome {
+    return switch (err) {
+        error.ServerError => .server_error,
+        error.QueryTimeout, error.PoolAcquireTimeout => .timeout,
+        error.Canceled => .canceled,
+        error.TransactionOutcomeUnknown => .ambiguous,
+        error.ConnectionBroken, error.ConnectionResetByPeer, error.BrokenPipe, error.EndOfStream => .transport_error,
+        else => .client_error,
+    };
+}
 
 const client_protocol_41: u32 = 1 << 9;
 const client_connect_with_db: u32 = 1 << 3;
@@ -380,6 +392,8 @@ pub const Client = struct {
     cache_hits: u64 = 0,
     cache_misses: u64 = 0,
     cache_evictions: u64 = 0,
+    /// Optional telemetry, disabled by default; one client has one borrower.
+    command_metrics: ?*metrics.Recorder = null,
     // Populated by Pool only. Standalone clients do not track pool lifecycle.
     pool_created_at: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
     pool_released_at: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
@@ -469,9 +483,26 @@ pub const Client = struct {
         self.wire.close(io);
     }
 
+    /// Attaches an externally owned recorder for the duration of one borrower.
+    /// Detach before freeing it or handing the client to another thread.
+    pub fn setCommandMetrics(self: *Client, recorder: ?*metrics.Recorder) void {
+        self.command_metrics = recorder;
+    }
+
+    fn observeCommand(self: *Client, io: std.Io, started: @TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))), category: metrics.Command, outcome: metrics.Outcome) void {
+        if (self.command_metrics) |recorder| {
+            const ns = started.untilNow(io, .awake).toNanoseconds();
+            const elapsed_us: u64 = @intCast(@max(0, ns) / 1000);
+            recorder.record(category, outcome, elapsed_us);
+        }
+    }
+
     pub fn ping(self: *Client, io: std.Io) !void {
-        try self.command(io, 0x0e, "");
-        try self.readCommandOk(io);
+        const started = std.Io.Clock.awake.now(io);
+        var outcome: metrics.Outcome = .success;
+        defer self.observeCommand(io, started, .ping, outcome);
+        self.command(io, 0x0e, "") catch |err| { outcome = classifyMetricError(err); return err; };
+        self.readCommandOk(io) catch |err| { outcome = classifyMetricError(err); return err; };
     }
 
     /// Changes the default schema for subsequent statements (COM_INIT_DB).
@@ -656,8 +687,11 @@ pub const Client = struct {
     }
 
     pub fn query(self: *Client, io: std.Io, sql: []const u8) !Result {
-        try self.command(io, 0x03, sql);
-        return self.readResult(io, false);
+        const started = std.Io.Clock.awake.now(io);
+        var outcome: metrics.Outcome = .success;
+        defer self.observeCommand(io, started, .query, outcome);
+        self.command(io, 0x03, sql) catch |err| { outcome = classifyMetricError(err); return err; };
+        return self.readResult(io, false) catch |err| { outcome = classifyMetricError(err); return err; };
     }
 
     /// Buffer every result part (including terminal OK packets) of a CALL.
@@ -844,8 +878,11 @@ pub const Client = struct {
 
     /// Execute with positional, typed parameters. Results use the binary row protocol.
     pub fn execute(self: *Client, io: std.Io, statement: Statement, params: []const Param) !Result {
-        try self.sendExecute(io, statement, params);
-        return self.readResult(io, true);
+        const started = std.Io.Clock.awake.now(io);
+        var outcome: metrics.Outcome = .success;
+        defer self.observeCommand(io, started, .prepared, outcome);
+        self.sendExecute(io, statement, params) catch |err| { outcome = classifyMetricError(err); return err; };
+        return self.readResult(io, true) catch |err| { outcome = classifyMetricError(err); return err; };
     }
 
     /// Stream prepared binary rows with one-row lifetime and bounded memory.
