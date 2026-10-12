@@ -19,6 +19,7 @@ pub const RowStream = @import("client.zig").RowStream;
 pub const Pool = @import("pool.zig").Pool;
 pub const PoolConfig = @import("pool.zig").PoolConfig;
 pub const PoolStats = @import("pool.zig").Stats;
+pub const CommandMetrics = @import("command_metrics.zig");
 
 test {
     _ = protocol;
@@ -31,4 +32,5 @@ test {
     _ = @import("sql_bytes.zig");
     _ = @import("temporal.zig");
     _ = @import("pool.zig");
+    _ = @import("command_metrics.zig");
 }
