@@ -37,7 +37,7 @@ pub const bucket_count = latency_buckets_us.len + 1;
 pub const Recorder = struct {
     counts: [command_count][outcome_count]u64 = std.mem.zeroes([command_count][outcome_count]u64),
     buckets: [command_count][bucket_count]u64 = std.mem.zeroes([command_count][bucket_count]u64),
-    total_duration_us: [command_count]u64 = @splat(0),
+    total_duration_us: [command_count]u64 = std.mem.zeroes([command_count]u64),
 
     /// Elapsed time must be monotonic and supplied by the caller in us.
     /// Saturating additions prevent counter rollover after long runtimes.
