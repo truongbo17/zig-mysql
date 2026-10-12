@@ -78,6 +78,7 @@ if [[ "$(uname -s)" == Linux ]]; then
   timeout 90s zig build -Doptimize=ReleaseFast bench
   # Deterministic prepared SQL mix; diagnostic CI baselines, not production SLA.
   timeout 120s zig build -Doptimize=ReleaseFast cache-bench
+  timeout 90s zig build -Doptimize=ReleaseFast metrics-bench
 else
   zig build -Doptimize=ReleaseFast bench
 fi
