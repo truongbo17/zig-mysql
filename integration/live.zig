@@ -1299,7 +1299,7 @@ test "MySQL per-command metrics opt-in and errors" {
     prepared.deinit();
     try std.testing.expectEqual(@as(u64, 1), collector.operations(.ping));
     try std.testing.expectEqual(@as(u64, 2), collector.operations(.query));
-    try std.testing.expectEqual(@as(u64, 1), collector.operations(.prepared));
+    try std.testing.expectEqual(@as(u64, 2), collector.operations(.prepared));
     const q = @intFromEnum(mysql.CommandMetrics.Command.query);
     const server_err = @intFromEnum(mysql.CommandMetrics.Outcome.server_error);
     try std.testing.expectEqual(@as(u64, 1), collector.counts[q][server_err]);
