@@ -510,11 +510,14 @@ pub const Client = struct {
 
     /// Changes the default schema for subsequent statements (COM_INIT_DB).
     pub fn selectDatabase(self: *Client, io: std.Io, database: []const u8) !void {
+        const started = if (self.command_metrics != null and !self.metrics_suppressed) std.Io.Clock.awake.now(io) else null;
+        var outcome: metrics.Outcome = .success;
+        defer self.observeCommand(io, started, .session, outcome);
         // A prepared statement belongs to its original schema. Close all
         // handles BEFORE switching; a failed COM_INIT_DB is not a cache hit.
-        try self.flushCachedStatements(io);
-        try self.command(io, 0x02, database);
-        try self.readCommandOk(io);
+        self.flushCachedStatements(io) catch |err| { outcome = classifyMetricError(err); return err; };
+        self.command(io, 0x02, database) catch |err| { outcome = classifyMetricError(err); return err; };
+        self.readCommandOk(io) catch |err| { outcome = classifyMetricError(err); return err; };
     }
 
     /// Restores a clean MySQL session without opening another TCP connection.
@@ -523,8 +526,11 @@ pub const Client = struct {
     /// Statement created before this call. Any active RowStream must be drained
     /// before the reset.
     pub fn resetConnection(self: *Client, io: std.Io) !void {
-        try self.command(io, 0x1f, "");
-        try self.readCommandOk(io);
+        const started = if (self.command_metrics != null and !self.metrics_suppressed) std.Io.Clock.awake.now(io) else null;
+        var outcome: metrics.Outcome = .success;
+        defer self.observeCommand(io, started, .session, outcome);
+        self.command(io, 0x1f, "") catch |err| { outcome = classifyMetricError(err); return err; };
+        self.readCommandOk(io) catch |err| { outcome = classifyMetricError(err); return err; };
         // COM_RESET_CONNECTION invalidates all MySQL statement handles.
         self.clearCachedStatements();
         if (self.last_server_error) |e| {
@@ -605,14 +611,17 @@ pub const Client = struct {
         }
         select.concurrent(.operation, work, args) catch |err| {
             self.broken = true;
+            outcome = classifyMetricError(err);
             return err;
         };
         select.concurrent(.timer, std.Io.sleep, .{ io, timeout, .awake }) catch |err| {
             self.broken = true;
+            outcome = classifyMetricError(err);
             return err;
         };
         switch (select.await() catch |err| {
             self.broken = true;
+            outcome = classifyMetricError(err);
             return err;
         }) {
             .operation => |response| return response catch |err| {
