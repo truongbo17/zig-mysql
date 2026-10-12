@@ -80,6 +80,7 @@ if [[ "$(uname -s)" == Linux ]]; then
   timeout 120s zig build -Doptimize=ReleaseFast cache-bench
   timeout 90s zig build -Doptimize=ReleaseFast metrics-bench
   timeout 120s zig build -Doptimize=ReleaseFast batch-bench
+  timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast high-ccu-bench
 else
   zig build -Doptimize=ReleaseFast bench
 fi
@@ -104,6 +105,9 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
   if [[ "$suffix" == 84 ]]; then
     docker cp "$name":/var/lib/mysql/ca.pem "$ca_file"
     zig build tls-integration
+    if [[ "$(uname -s)" == Linux ]]; then
+      timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast high-ccu-tls-bench
+    fi
   fi
   if [[ "$(uname -s)" == Linux ]]; then
     "$binary"

@@ -108,6 +108,36 @@ pub fn build(b: *std.Build) void {
     const batch_bench_step = b.step("batch-bench", "Compare prepared per-row and prevalidated batch throughput");
     batch_bench_step.dependOn(&run_batch_bench.step);
 
+    const ccu_module = b.createModule(.{
+        .root_source_file = b.path("bench/high_ccu.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ccu_module.addImport("zig_mysql", module);
+    const ccu_exe = b.addExecutable(.{
+        .name = "zig-mysql-high-ccu-bench",
+        .root_module = ccu_module,
+    });
+    const run_ccu = b.addRunArtifact(ccu_exe);
+    run_ccu.has_side_effects = true;
+    const ccu_step = b.step("high-ccu-bench", "Run 1/8/32/64/128-CCU plaintext matrix");
+    ccu_step.dependOn(&run_ccu.step);
+
+    const ccu_tls_module = b.createModule(.{
+        .root_source_file = b.path("bench/high_ccu_tls.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ccu_tls_module.addImport("zig_mysql", module);
+    const ccu_tls_exe = b.addExecutable(.{
+        .name = "zig-mysql-high-ccu-tls-bench",
+        .root_module = ccu_tls_module,
+    });
+    const run_ccu_tls = b.addRunArtifact(ccu_tls_exe);
+    run_ccu_tls.has_side_effects = true;
+    const ccu_tls_step = b.step("high-ccu-tls-bench", "Run 1/8/32/64/128-CCU verified TLS matrix");
+    ccu_tls_step.dependOn(&run_ccu_tls.step);
+
     const soak_module = b.createModule(.{
         .root_source_file = b.path("integration/soak_local.zig"),
         .target = target,
