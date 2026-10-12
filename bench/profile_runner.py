@@ -6,6 +6,7 @@ The profiler observes a *running* process, never fabricates RSS/FD numbers.
 """
 import os
 import subprocess
+import tempfile
 import sys
 import time
 from pathlib import Path
@@ -68,30 +69,34 @@ def main():
         raise SystemExit("Usage: profile_runner.py COMMAND [ARGS...]")
     if not Path("/proc").exists():
         raise SystemExit("Linux /proc is required for RSS/FD profiling")
-    proc = subprocess.Popen(sys.argv[1:], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    peak_rss_kb = peak_fds = observed = 0
-    try:
-        while proc.poll() is None:
-            rss, fds, count = sample(proc.pid)
-            peak_rss_kb = max(peak_rss_kb, rss)
-            peak_fds = max(peak_fds, fds)
-            observed += count
-            time.sleep(0.1)
-        output = proc.stdout.read().decode("utf-8", errors="replace")
-        sys.stdout.write(output)
-        # A background/native thread can emit heap corruption while the
-        # monitored parent process still reports exit status 0.
-        if has_fatal_output(output):
-            raise SystemExit("FATAL: heap corruption/segfault marker in benchmark output")
-        print(f"D4_PROFILE samples={observed} peak_rss_kb={peak_rss_kb} peak_fds={peak_fds}")
-        if proc.returncode != 0:
-            raise SystemExit(proc.returncode)
-        if observed == 0:
-            raise SystemExit("No benchmark process samples; RSS/FD evidence absent")
-    finally:
-        if proc.poll() is None:
-            proc.kill()
-            proc.wait()
+    # A pipe fills if a crashed native process prints many stacks, which can
+    # deadlock the profiler before it ever observes the failure. Use a
+    # seekable temporary file instead, and read it after the process exits.
+    with tempfile.TemporaryFile(mode="w+b") as log:
+        proc = subprocess.Popen(sys.argv[1:], stdout=log, stderr=subprocess.STDOUT)
+        peak_rss_kb = peak_fds = observed = 0
+        try:
+            while proc.poll() is None:
+                rss, fds, count = sample(proc.pid)
+                peak_rss_kb = max(peak_rss_kb, rss)
+                peak_fds = max(peak_fds, fds)
+                observed += count
+                time.sleep(0.1)
+            log.seek(0)
+            output = log.read().decode("utf-8", errors="replace")
+            sys.stdout.write(output)
+            sys.stdout.flush()
+            if has_fatal_output(output):
+                raise SystemExit("FATAL: heap corruption/segfault marker in benchmark output")
+            print(f"D4_PROFILE samples={observed} peak_rss_kb={peak_rss_kb} peak_fds={peak_fds}")
+            if proc.returncode != 0:
+                raise SystemExit(proc.returncode)
+            if observed == 0:
+                raise SystemExit("No benchmark process samples; RSS/FD evidence absent")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
 
 
 if __name__ == "__main__":
