@@ -38,6 +38,26 @@ extern "ssl" fn SSL_shutdown(*SSL) c_int;
 pub const Session = struct {
     ctx: *SSL_CTX,
     ssl: *SSL,
+    /// Deadline scoped to one command; never shared across pool borrowers.
+    deadline_started: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
+    deadline_ns: ?i128 = null,
+
+    pub fn setDeadline(self: *Session, io: std.Io, duration: std.Io.Duration) void {
+        self.deadline_started = std.Io.Clock.awake.now(io);
+        self.deadline_ns = duration.toNanoseconds();
+    }
+
+    pub fn clearDeadline(self: *Session) void {
+        self.deadline_started = null;
+        self.deadline_ns = null;
+    }
+
+    fn checkDeadline(self: *Session, io: std.Io) !void {
+        if (self.deadline_started) |start| {
+            if (start.untilNow(io, .awake).toNanoseconds() >= self.deadline_ns.?)
+                return error.QueryTimeout;
+        }
+    }
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, fd: c_int, host: []const u8, ca_file: ?[]const u8) !Session {
         if (host.len == 0 or std.mem.indexOfScalar(u8, host, 0) != null) return error.InvalidTlsHost;
@@ -94,6 +114,7 @@ pub const Session = struct {
     pub fn readExact(self: *Session, io: std.Io, destination: []u8) !void {
         var used: usize = 0;
         while (used < destination.len) {
+            try self.checkDeadline(io);
             const count: c_int = @intCast(@min(destination.len - used, std.math.maxInt(c_int)));
             const n = SSL_read(self.ssl, destination[used..].ptr, count);
             if (n <= 0) {
@@ -113,6 +134,7 @@ pub const Session = struct {
     pub fn writeAll(self: *Session, io: std.Io, bytes: []const u8) !void {
         var used: usize = 0;
         while (used < bytes.len) {
+            try self.checkDeadline(io);
             const count: c_int = @intCast(@min(bytes.len - used, std.math.maxInt(c_int)));
             const n = SSL_write(self.ssl, bytes[used..].ptr, count);
             if (n <= 0) {
