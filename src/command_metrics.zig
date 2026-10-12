@@ -27,8 +27,8 @@ pub const latency_buckets_us = [_]u64{
     25_000, 50_000, 100_000, 250_000, 500_000,
     1_000_000, 5_000_000,
 };
-pub const command_count = @typeInfo(Command).@"enum".fields.len;
-pub const outcome_count = @typeInfo(Outcome).@"enum".fields.len;
+pub const command_count = @intFromEnum(Command.session) + 1;
+pub const outcome_count = @intFromEnum(Outcome.ambiguous) + 1;
 pub const bucket_count = latency_buckets_us.len + 1;
 
 /// Per-connection (single-borrower) telemetry accumulator. Not thread-safe:
