@@ -69,6 +69,11 @@ def main():
             time.sleep(0.1)
         output = proc.stdout.read().decode("utf-8", errors="replace")
         sys.stdout.write(output)
+        # A background/native thread can emit heap corruption while the
+        # monitored parent process still reports exit status 0.
+        fatal_markers = ("double free or corruption", "malloc():", "corrupted size vs.", "free(): invalid pointer", "signal SEGV", "Segmentation fault")
+        if any(marker in output for marker in fatal_markers):
+            raise SystemExit("FATAL: heap corruption/segfault marker in benchmark output")
         print(f"D4_PROFILE samples={observed} peak_rss_kb={peak_rss_kb} peak_fds={peak_fds}")
         if proc.returncode != 0:
             raise SystemExit(proc.returncode)
