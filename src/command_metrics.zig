@@ -61,6 +61,11 @@ pub const Recorder = struct {
     pub fn formatPrometheus(self: *const Recorder, allocator: std.mem.Allocator) ![]u8 {
         var buffer: std.ArrayList(u8) = .empty;
         errdefer buffer.deinit(allocator);
+        try buffer.appendSlice(allocator,
+            "# HELP zig_mysql_commands_total Completed client operations by fixed command and outcome\n" ++
+            "# TYPE zig_mysql_commands_total counter\n" ++
+            "# HELP zig_mysql_command_duration_us Client operation latency in microseconds\n" ++
+            "# TYPE zig_mysql_command_duration_us histogram\n");
         inline for (.{ Command.query, Command.prepared, Command.transaction, Command.ping, Command.session }) |command| {
             const c = @intFromEnum(command);
             inline for (.{ Outcome.success, Outcome.server_error, Outcome.timeout, Outcome.canceled, Outcome.transport_error, Outcome.client_error, Outcome.ambiguous }) |outcome| {
