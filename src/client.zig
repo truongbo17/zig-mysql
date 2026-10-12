@@ -720,8 +720,11 @@ pub const Client = struct {
     /// Multi-statements remain disabled: this does not authorize SQL strings
     /// containing multiple independent statements.
     pub fn queryAll(self: *Client, io: std.Io, sql: []const u8) !MultiResult {
-        try self.command(io, 0x03, sql);
-        return self.readAllResults(io, false);
+        const started = if (self.command_metrics != null and !self.metrics_suppressed) std.Io.Clock.awake.now(io) else null;
+        var outcome: metrics.Outcome = .success;
+        defer self.observeCommand(io, started, .query, outcome);
+        self.command(io, 0x03, sql) catch |err| { outcome = classifyMetricError(err); return err; };
+        return self.readAllResults(io, false) catch |err| { outcome = classifyMetricError(err); return err; };
     }
 
     /// Issue exactly one CALL statement and iterate its response parts.
@@ -792,6 +795,13 @@ pub const Client = struct {
 
     /// Prepare a statement on the server. Close it when no longer needed.
     pub fn prepare(self: *Client, io: std.Io, sql: []const u8) !Statement {
+        const started = if (self.command_metrics != null and !self.metrics_suppressed) std.Io.Clock.awake.now(io) else null;
+        var outcome: metrics.Outcome = .success;
+        defer self.observeCommand(io, started, .prepared, outcome);
+        return self.prepareInternal(io, sql) catch |err| { outcome = classifyMetricError(err); return err; };
+    }
+
+    fn prepareInternal(self: *Client, io: std.Io, sql: []const u8) !Statement {
         try self.command(io, 0x16, sql);
         const packet = self.wire.read(io) catch |err| {
             self.broken = true;
