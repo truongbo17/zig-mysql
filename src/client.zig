@@ -394,6 +394,8 @@ pub const Client = struct {
     cache_evictions: u64 = 0,
     /// Optional telemetry, disabled by default; one client has one borrower.
     command_metrics: ?*metrics.Recorder = null,
+    metrics_suppressed: bool = false,
+    metrics_command_override: ?metrics.Command = null,
     // Populated by Pool only. Standalone clients do not track pool lifecycle.
     pool_created_at: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
     pool_released_at: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
@@ -490,6 +492,7 @@ pub const Client = struct {
     }
 
     fn observeCommand(self: *Client, io: std.Io, started: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))), category: metrics.Command, outcome: metrics.Outcome) void {
+        if (self.metrics_suppressed) return;
         if (self.command_metrics) |recorder| {
             const ns = started.?.untilNow(io, .awake).toNanoseconds();
             const elapsed_us: u64 = @intCast(@max(0, ns) / 1000);
@@ -533,39 +536,47 @@ pub const Client = struct {
     /// Protects pool session cleanup from a server that accepts
     /// COM_RESET_CONNECTION but never replies. Timed-out sessions are broken.
     pub fn resetConnectionWithTimeout(self: *Client, io: std.Io, timeout: std.Io.Duration) !void {
-        return self.withTimeout(void, io, timeout, Client.resetConnection, .{ self, io });
+        return self.withTimeout(void, io, timeout, .session, Client.resetConnection, .{ self, io });
     }
 
     /// Bounds restoring the caller's configured database on session reset.
     pub fn selectDatabaseWithTimeout(self: *Client, io: std.Io, database: []const u8, timeout: std.Io.Duration) !void {
-        return self.withTimeout(void, io, timeout, Client.selectDatabase, .{ self, io, database });
+        return self.withTimeout(void, io, timeout, .session, Client.selectDatabase, .{ self, io, database });
     }
 
     /// A deadline for the entire PING exchange, not just one socket read.
     /// Timed commands require cancelable std.Io socket operations; the TLS
     /// backend uses nonblocking OpenSSL sockets and cancellable Io waits.
     pub fn pingWithTimeout(self: *Client, io: std.Io, timeout: std.Io.Duration) !void {
-        return self.withTimeout(void, io, timeout, Client.ping, .{ self, io });
+        return self.withTimeout(void, io, timeout, .ping, Client.ping, .{ self, io });
     }
 
     /// Times the entire buffered COM_QUERY exchange (including result rows).
     /// On expiration the socket becomes unusable and must be discarded.
     /// Streaming queryRows has no deadline; finish or drain it explicitly.
     pub fn queryWithTimeout(self: *Client, io: std.Io, sql: []const u8, timeout: std.Io.Duration) !Result {
-        return self.withTimeout(Result, io, timeout, Client.query, .{ self, io, sql });
+        return self.withTimeout(Result, io, timeout, .query, Client.query, .{ self, io, sql });
     }
 
     /// Times a prepared statement's execution and buffered result read.
     /// Server-side statement handles must not be reused on timeout.
     pub fn executeWithTimeout(self: *Client, io: std.Io, statement: Statement, params: []const Param, timeout: std.Io.Duration) !Result {
-        return self.withTimeout(Result, io, timeout, Client.execute, .{ self, io, statement, params });
+        return self.withTimeout(Result, io, timeout, .prepared, Client.execute, .{ self, io, statement, params });
     }
 
     /// Race a command against an elapsed monotonic duration. Joining the losing
     /// task before returning is essential: otherwise that task could continue
     /// reading from a socket after the pool has handed it to another caller.
-    fn withTimeout(self: *Client, comptime T: type, io: std.Io, timeout: std.Io.Duration, comptime work: anytype, args: anytype) !T {
-        if (self.broken) return error.ConnectionBroken;
+    fn withTimeout(self: *Client, comptime T: type, io: std.Io, timeout: std.Io.Duration, category: metrics.Command, comptime work: anytype, args: anytype) !T {
+        const started = if (self.command_metrics != null and !self.metrics_suppressed) std.Io.Clock.awake.now(io) else null;
+        const was_suppressed = self.metrics_suppressed;
+        self.metrics_suppressed = true;
+        var outcome: metrics.Outcome = .success;
+        defer {
+            self.metrics_suppressed = was_suppressed;
+            self.observeCommand(io, started, category, outcome);
+        }
+        if (self.broken) { outcome = .transport_error; return error.ConnectionBroken; }
         const Outcome = union(enum) {
             operation: anyerror!T,
             timer: anyerror!void,
@@ -606,6 +617,7 @@ pub const Client = struct {
         }) {
             .operation => |response| return response catch |err| {
                 if (err == error.Canceled) self.broken = true;
+                outcome = classifyMetricError(err);
                 return err;
             },
             .timer => |elapsed| {
@@ -614,6 +626,7 @@ pub const Client = struct {
                 // be buffered in transit; resetting the packet sequence alone
                 // would corrupt the next command.
                 self.broken = true;
+                outcome = if (category == .transaction) .ambiguous else .timeout;
                 return error.QueryTimeout;
             },
         }
@@ -661,7 +674,7 @@ pub const Client = struct {
     fn finishTransactionWithTimeout(self: *Client, io: std.Io, timeout: std.Io.Duration, comptime operation: anytype) !void {
         if (self.broken) return error.ConnectionBroken;
         if (self.active_stream) return error.RowsNotConsumed;
-        self.withTimeout(void, io, timeout, operation, .{ self, io }) catch |err| {
+        self.withTimeout(void, io, timeout, .transaction, operation, .{ self, io }) catch |err| {
             // A valid server ERR packet explicitly rejected the operation.
             // A timer/transport failure after sending is ambiguous, even if
             // the server finished and its reply was merely lost.
@@ -689,7 +702,7 @@ pub const Client = struct {
     pub fn query(self: *Client, io: std.Io, sql: []const u8) !Result {
         const started = if (self.command_metrics != null) std.Io.Clock.awake.now(io) else null;
         var outcome: metrics.Outcome = .success;
-        defer self.observeCommand(io, started, .query, outcome);
+        defer self.observeCommand(io, started, self.metrics_command_override orelse .query, outcome);
         self.command(io, 0x03, sql) catch |err| { outcome = classifyMetricError(err); return err; };
         return self.readResult(io, false) catch |err| { outcome = classifyMetricError(err); return err; };
     }
@@ -765,7 +778,7 @@ pub const Client = struct {
     /// Timeout applies to the initial COM_QUERY and column metadata phase;
     /// call RowStream.nextWithTimeout separately to time each row fetch.
     pub fn queryRowsWithTimeout(self: *Client, io: std.Io, sql: []const u8, timeout: std.Io.Duration) !RowStream {
-        return self.withTimeout(RowStream, io, timeout, Client.queryRows, .{ self, io, sql });
+        return self.withTimeout(RowStream, io, timeout, .query, Client.queryRows, .{ self, io, sql });
     }
 
     /// Prepare a statement on the server. Close it when no longer needed.
@@ -895,7 +908,7 @@ pub const Client = struct {
     /// Bounded initial COM_STMT_EXECUTE / column metadata phase. Per-row
     /// deadlines are applied independently with RowStream.nextWithTimeout.
     pub fn executeRowsWithTimeout(self: *Client, io: std.Io, statement: Statement, params: []const Param, timeout: std.Io.Duration) !RowStream {
-        return self.withTimeout(RowStream, io, timeout, Client.executeRows, .{ self, io, statement, params });
+        return self.withTimeout(RowStream, io, timeout, .prepared, Client.executeRows, .{ self, io, statement, params });
     }
 
     fn sendExecute(self: *Client, io: std.Io, statement: Statement, params: []const Param) !void {
@@ -1204,6 +1217,9 @@ pub const Client = struct {
     }
 
     fn runControlStatement(self: *Client, io: std.Io, sql: []const u8) !void {
+        const previous = self.metrics_command_override;
+        self.metrics_command_override = .transaction;
+        defer self.metrics_command_override = previous;
         var result = try self.query(io, sql);
         defer result.deinit();
         if (result.value != .ok) return error.UnexpectedResult;
