@@ -361,6 +361,24 @@ runner diagnostics varied: Zig 0.16 batch/single throughput ratio **1.101**;
 Zig 0.17 **0.945**. This helper does **not** promise better throughput
 than single executes; it primarily adds validation and failure visibility.
 
+## High-concurrency TCP/TLS diagnostics (Sprint D4, issue #31)
+
+The opt-in `high-ccu-bench` and `high-ccu-tls-bench` build targets
+exercise **1, 8, 32, 64, 128** concurrent borrowers with a **32-connection
+pool**, against disposable MySQL 8.0 TCP and MySQL 8.4 verified TLS
+respectively. Each scenario issues 32 `SELECT 1` requests per worker,
+including pool checkout and session reset. The Linux test runner records
+per-run p50/p95/p99, requests/s, process CPU time, peak RSS and FD count,
+pool waits and timeouts; missing RSS/FD samples fail the profiling step.
+
+In verified CI [run #38190973035](https://github.com/truongbo17/zig-mysql/actions/runs/38190973035),
+Zig 0.17 with 128 borrowers measured **5,251.6 req/s, p99 76.667 ms**
+over TCP and **4,451.0 req/s, p99 89.097 ms** over verified TLS. Zig
+0.16 measured **3,022.7 / 2,519.6 req/s**, with p99 **138.609 /
+148.689 ms** respectively. These brief shared CI measurements are
+diagnostic only; they are **not** staging SLAs or 24-hour production
+certification. See [Sprint D4 methodology](docs/SPRINT_D4_CCU.md).
+
 ## Connection pooling
 
 `Pool` limits the number of live MySQL connections and waits when all connections
@@ -845,7 +863,7 @@ path on the GitHub runner; do not use these values as production SLAs.
 | D1 | [#28 Per-command metrics and latency hooks](https://github.com/truongbo17/zig-mysql/issues/28) | Existing Pool Stats | In review ([PR #60](https://github.com/truongbo17/zig-mysql/pull/60)); not complete |
 | D2 | [#29 Safe batch prepared execute/bulk insert](https://github.com/truongbo17/zig-mysql/issues/29) | Sprint A prepared types | Implemented, CI review ([PR #61](https://github.com/truongbo17/zig-mysql/pull/61)) |
 | D3 | [#30 Native TLS readiness waits](https://github.com/truongbo17/zig-mysql/issues/30) | Cancellation safety | Planned |
-| D4 | [#31 1–128 worker TLS/CCU benchmarks](https://github.com/truongbo17/zig-mysql/issues/31) | #28, #30 | Planned |
+| D4 | [#31 1–128 worker TLS/CCU benchmarks](https://github.com/truongbo17/zig-mysql/issues/31) | #28, #30 | Benchmark CI PASS; acceptance pending ([PR #63](https://github.com/truongbo17/zig-mysql/pull/63)) |
 
 ### Sprint E — Compatibility and protocol robustness (P3)
 
