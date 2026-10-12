@@ -61,9 +61,9 @@ pub const Recorder = struct {
     pub fn formatPrometheus(self: *const Recorder, allocator: std.mem.Allocator) ![]u8 {
         var buffer: std.ArrayList(u8) = .empty;
         errdefer buffer.deinit(allocator);
-        inline for (.{ Command.query, .prepared, .transaction, .ping, .session }) |command| {
+        inline for (.{ Command.query, Command.prepared, Command.transaction, Command.ping, Command.session }) |command| {
             const c = @intFromEnum(command);
-            inline for (.{ Outcome.success, .server_error, .timeout, .canceled, .transport_error, .client_error, .ambiguous }) |outcome| {
+            inline for (.{ Outcome.success, Outcome.server_error, Outcome.timeout, Outcome.canceled, Outcome.transport_error, Outcome.client_error, Outcome.ambiguous }) |outcome| {
                 const text = try std.fmt.allocPrint(allocator,
                     "zig_mysql_commands_total{{command=\"{s}\",outcome=\"{s}\"}} {d}\n",
                     .{ @tagName(command), @tagName(outcome), self.counts[c][@intFromEnum(outcome)] });
