@@ -395,6 +395,9 @@ pub const Pool = struct {
             reusable = false;
         }
 
+        // A metrics recorder belongs to the previous borrower. Never retain
+        // its pointer across pool checkout boundaries (use-after-free risk).
+        connection.setCommandMetrics(null);
         self.mutex.lockUncancelable(io);
         if (expired) self.expired_connections += 1;
         if (reset_failed) self.reset_failures += 1;

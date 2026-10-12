@@ -77,6 +77,22 @@ pub fn build(b: *std.Build) void {
     const cache_bench_step = b.step("cache-bench", "Benchmark prepared cache off/on across 1/8/32 workers");
     cache_bench_step.dependOn(&run_cache_bench.step);
 
+
+    const metrics_bench_module = b.createModule(.{
+        .root_source_file = b.path("bench/metrics.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    metrics_bench_module.addImport("zig_mysql", module);
+    const metrics_bench_exe = b.addExecutable(.{
+        .name = "zig-mysql-metrics-bench",
+        .root_module = metrics_bench_module,
+    });
+    const run_metrics_bench = b.addRunArtifact(metrics_bench_exe);
+    run_metrics_bench.has_side_effects = true;
+    const metrics_bench_step = b.step("metrics-bench", "Compare instrumentation disabled and enabled on MySQL");
+    metrics_bench_step.dependOn(&run_metrics_bench.step);
+
     const soak_module = b.createModule(.{
         .root_source_file = b.path("integration/soak_local.zig"),
         .target = target,

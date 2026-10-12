@@ -89,3 +89,30 @@ test "concurrent acquisitions and fault injection respect hard pool limit" {
     try std.testing.expectEqual(@as(usize, 0), stats.in_use);
     try std.testing.expect(stats.health_check_failures >= 5);
 }
+
+const MetricsWorker = struct {
+    io: std.Io,
+    shared: *mysql.CommandMetrics.SharedRecorder,
+    fn run(self: *@This()) std.Io.Cancelable!void {
+        for (0..2000) |_| self.shared.record(self.io, .query, .success, 100);
+    }
+};
+
+test "shared metrics recorder is race-free under 32 concurrent writers" {
+    var threaded: std.Io.Threaded = .init(std.heap.page_allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var shared: mysql.CommandMetrics.SharedRecorder = .{};
+    var workers: [32]MetricsWorker = undefined;
+    var group: std.Io.Group = .init;
+    defer group.cancel(io);
+    for (&workers) |*worker| {
+        worker.* = .{ .io = io, .shared = &shared };
+        try group.concurrent(io, MetricsWorker.run, .{worker});
+    }
+    try group.await(io);
+    const snapshot = shared.snapshot(io);
+    try std.testing.expectEqual(@as(u64, 64_000), snapshot.operations(.query));
+    try std.testing.expectEqual(@as(u64, 64_000), snapshot.buckets[@intFromEnum(mysql.CommandMetrics.Command.query)][0]);
+    try std.testing.expectEqual(@as(u64, 6_400_000), snapshot.total_duration_us[@intFromEnum(mysql.CommandMetrics.Command.query)]);
+}

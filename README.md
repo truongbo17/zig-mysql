@@ -297,6 +297,34 @@ commit-specific and do not replace the production release 24-hour soak
 or realistic p95/p99, throughput, memory/CPU/FD and HA/security validation
 (OPS #13).
 
+## Opt-in command telemetry (Sprint D1, issue #28)
+
+`mysql.CommandMetrics.Recorder` counts outcomes and microsecond latency
+histograms with fixed, low-cardinality command/outcome labels. It does not
+capture SQL text, parameter bytes, passwords or server messages. The
+`formatPrometheus(allocator)` export is caller-owned and emits cumulative
+histogram buckets. This instrumentation is disabled unless explicitly attached.
+
+```zig
+var telemetry: mysql.CommandMetrics.Recorder = .{};
+conn.setCommandMetrics(&telemetry);
+defer conn.setCommandMetrics(null);
+var rows = try conn.query(io, "SELECT 1");
+rows.deinit();
+const exported = try telemetry.formatPrometheus(allocator);
+defer allocator.free(exported);
+```
+
+A recorder belongs to one connection borrower; pooled release detaches it.
+`SharedRecorder` provides synchronized `record`, `merge` and `snapshot`
+methods for aggregating independent recorders across threads. Buffered queries,
+prepared setup/execution, ping, control transactions and session reset/schema
+selection are covered. Timed wrappers record one terminal result rather than
+double counting their inner command. Streaming result consumption is not
+covered by the buffered latency histogram; see
+[scope and limitations](docs/SPRINT_D1_METRICS.md). Benchmarks comparing
+enabled and disabled hooks use `zig build -Doptimize=ReleaseFast metrics-bench`.
+
 ## Connection pooling
 
 `Pool` limits the number of live MySQL connections and waits when all connections
@@ -778,7 +806,7 @@ path on the GitHub runner; do not use these values as production SLAs.
 
 | Order | Small issue | Dependency | Status |
 | --- | --- | --- | --- |
-| D1 | [#28 Per-command metrics and latency hooks](https://github.com/truongbo17/zig-mysql/issues/28) | Existing Pool Stats | Planned |
+| D1 | [#28 Per-command metrics and latency hooks](https://github.com/truongbo17/zig-mysql/issues/28) | Existing Pool Stats | In review ([PR #60](https://github.com/truongbo17/zig-mysql/pull/60)); not complete |
 | D2 | [#29 Safe batch prepared execute/bulk insert](https://github.com/truongbo17/zig-mysql/issues/29) | Sprint A prepared types | Planned |
 | D3 | [#30 Native TLS readiness waits](https://github.com/truongbo17/zig-mysql/issues/30) | Cancellation safety | Planned |
 | D4 | [#31 1–128 worker TLS/CCU benchmarks](https://github.com/truongbo17/zig-mysql/issues/31) | #28, #30 | Planned |

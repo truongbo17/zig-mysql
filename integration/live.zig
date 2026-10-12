@@ -1272,3 +1272,62 @@ test "MySQL C3 bounded cached prepares LRU schema reset and pool isolation" {
     q.deinit();
     pool.release(io, another);
 }
+
+test "MySQL per-command metrics opt-in and errors" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest",
+        .password = "zig_mysql_test",
+        .database = "zigtest",
+    });
+    defer conn.deinit(io);
+
+    var collector: mysql.CommandMetrics.Recorder = .{};
+    try conn.ping(io);
+    try std.testing.expectEqual(@as(u64, 0), collector.operations(.ping));
+    conn.setCommandMetrics(&collector);
+    try conn.ping(io);
+    var good = try conn.query(io, "SELECT 1");
+    good.deinit();
+    try std.testing.expectError(error.ServerError, conn.query(io, "SELECT * FROM zig_metrics_missing_table"));
+    var stmt = try conn.prepare(io, "SELECT ?");
+    defer conn.closeStatement(io, &stmt) catch {};
+    var prepared = try conn.execute(io, stmt, &.{.{ .int = 17 }});
+    prepared.deinit();
+    try std.testing.expectEqual(@as(u64, 1), collector.operations(.ping));
+    try std.testing.expectEqual(@as(u64, 2), collector.operations(.query));
+    try std.testing.expectEqual(@as(u64, 2), collector.operations(.prepared));
+    const q = @intFromEnum(mysql.CommandMetrics.Command.query);
+    const server_err = @intFromEnum(mysql.CommandMetrics.Outcome.server_error);
+    try std.testing.expectEqual(@as(u64, 1), collector.counts[q][server_err]);
+    conn.setCommandMetrics(null);
+}
+
+test "pooled borrower metrics recorder detaches before next checkout" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var pool = try mysql.Pool.init(std.testing.allocator, .{
+        .connection = .{
+            .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+            .username = "zigtest", .password = "zig_mysql_test", .database = "zigtest",
+        },
+        .max_open = 1, .max_idle = 1,
+    });
+    defer pool.deinit(io);
+    const first = try pool.acquire(io);
+    var telemetry: mysql.CommandMetrics.Recorder = .{};
+    first.setCommandMetrics(&telemetry);
+    var value = try first.query(io, "SELECT 1");
+    value.deinit();
+    pool.release(io, first);
+    const before = telemetry.operations(.query);
+    const next = try pool.acquire(io);
+    var reuse = try next.query(io, "SELECT 2");
+    reuse.deinit();
+    pool.release(io, next);
+    try std.testing.expectEqual(before, telemetry.operations(.query));
+}
