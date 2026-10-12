@@ -55,6 +55,42 @@ pub const Recorder = struct {
         self.buckets[c][bucket_count - 1] +|= 1;
     }
 
+
+    /// Caller-owned Prometheus exposition. Only compile-time command/outcome
+    /// labels appear, never SQL, addresses, passwords, or server messages.
+    pub fn formatPrometheus(self: *const Recorder, allocator: std.mem.Allocator) ![]u8 {
+        var buffer: std.ArrayList(u8) = .empty;
+        errdefer buffer.deinit(allocator);
+        inline for (.{ Command.query, .prepared, .transaction, .ping, .session }) |command| {
+            const c = @intFromEnum(command);
+            inline for (.{ Outcome.success, .server_error, .timeout, .canceled, .transport_error, .client_error, .ambiguous }) |outcome| {
+                const text = try std.fmt.allocPrint(allocator,
+                    "zig_mysql_commands_total{{command=\"{s}\",outcome=\"{s}\"}} {d}\n",
+                    .{ @tagName(command), @tagName(outcome), self.counts[c][@intFromEnum(outcome)] });
+                defer allocator.free(text);
+                try buffer.appendSlice(allocator, text);
+            }
+            var sum: u64 = 0;
+            for (latency_buckets_us, 0..) |upper, i| {
+                sum +|= self.buckets[c][i];
+                const line = try std.fmt.allocPrint(allocator,
+                    "zig_mysql_command_duration_us_bucket{{command=\"{s}\",le=\"{d}\"}} {d}\n",
+                    .{ @tagName(command), upper, sum });
+                defer allocator.free(line);
+                try buffer.appendSlice(allocator, line);
+            }
+            sum +|= self.buckets[c][bucket_count - 1];
+            const ending = try std.fmt.allocPrint(allocator,
+                "zig_mysql_command_duration_us_bucket{{command=\"{s}\",le=\"+Inf\"}} {d}\n" ++
+                "zig_mysql_command_duration_us_count{{command=\"{s}\"}} {d}\n" ++
+                "zig_mysql_command_duration_us_sum{{command=\"{s}\"}} {d}\n",
+                .{ @tagName(command), sum, @tagName(command), self.operations(command), @tagName(command), self.total_duration_us[c] });
+            defer allocator.free(ending);
+            try buffer.appendSlice(allocator, ending);
+        }
+        return buffer.toOwnedSlice(allocator);
+    }
+
     pub fn operations(self: *const Recorder, command: Command) u64 {
         var total: u64 = 0;
         for (self.counts[@intFromEnum(command)]) |n| total +|= n;
@@ -85,4 +121,16 @@ test "counters saturate rather than overflow" {
     m.record(.transaction, .ambiguous, 5);
     try std.testing.expectEqual(std.math.maxInt(u64), m.counts[c][o]);
     try std.testing.expectEqual(std.math.maxInt(u64), m.total_duration_us[c]);
+}
+
+test "Prometheus exposition uses fixed labels and cumulative buckets" {
+    var m: Recorder = .{};
+    m.record(.query, .success, 100);
+    m.record(.query, .server_error, 101);
+    const output = try m.formatPrometheus(std.testing.allocator);
+    defer std.testing.allocator.free(output);
+    try std.testing.expect(std.mem.indexOf(u8, output, "command=\"query\",outcome=\"server_error\"} 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "command=\"query\",le=\"100\"} 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "command=\"query\",le=\"250\"} 2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "zig_mysql_command_duration_us_sum{command=\"query\"} 201") != null);
 }
