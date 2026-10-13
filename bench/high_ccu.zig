@@ -60,12 +60,31 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
         .health_check_timeout = .fromSeconds(3),
     });
     defer pool.deinit(io);
+    // DIAGNOSTIC: connect/handshake all TLS sessions without concurrent
+    // calls, then execute the ordinary 128-worker workload. This separates
+    // concurrent SSL session creation from concurrent query/reset/reuse.
+    if (tls) {
+        var initial: [pool_limit]*mysql.Client = undefined;
+        var built: usize = 0;
+        errdefer {
+            for (initial[0..built]) |connection| pool.release(io, connection);
+        }
+        for (&initial) |*slot| {
+            slot.* = try pool.acquire(io);
+            built += 1;
+        }
+        for (initial[0..built]) |connection| pool.release(io, connection);
+        built = 0;
+    }
     const samples = try allocator.alloc(u64, count * iterations);
     defer allocator.free(samples);
     const tasks = try allocator.alloc(Worker, count);
     defer allocator.free(tasks);
     var group: std.Io.Group = .init;
-    defer group.cancel(io);
+    // await and cancel are alternative terminal operations in std.Io.Group.
+    // Only cancel unfinished tasks when a startup/wait error occurs.
+    var joined = false;
+    defer if (!joined) group.cancel(io);
     const cpu_before = clock();
     const began = std.Io.Clock.awake.now(io);
     for (tasks, 0..) |*task, index| {
@@ -74,6 +93,7 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
         try group.concurrent(io, Worker.task, .{task});
     }
     try group.await(io);
+    joined = true;
     const cpu_after = clock();
     for (tasks) |task| if (task.failure) |err| return err;
     const elapsed: u64 = @intCast(@max(1, began.untilNow(io, .awake).toNanoseconds()));
