@@ -1401,3 +1401,45 @@ test "batch respects connection wire payload limit before any write" {
     defer check.deinit();
     try std.testing.expectEqualStrings("0", check.value.rows.items[0].values[0].?);
 }
+
+test "metrics cover text and prepared streams, early drain and procedure error" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest", .password = "zig_mysql_test", .database = "zigtest",
+    });
+    defer conn.deinit(io);
+    var telemetry: mysql.CommandMetrics.Recorder = .{};
+    conn.setCommandMetrics(&telemetry);
+
+    var text_rows = try conn.queryRows(io, "SELECT 1 UNION ALL SELECT 2");
+    try std.testing.expectEqual(@as(u64, 0), telemetry.operations(.query));
+    try std.testing.expectEqualStrings("1", (try text_rows.next(io)).?.values[0].?);
+    try std.testing.expectEqualStrings("2", (try text_rows.next(io)).?.values[0].?);
+    try std.testing.expect((try text_rows.next(io)) == null);
+    text_rows.deinit(io);
+    try std.testing.expectEqual(@as(u64, 1), telemetry.operations(.query));
+
+    var drained = try conn.queryRows(io, "SELECT 3 UNION ALL SELECT 4");
+    drained.deinit(io); // lifecycle ends after draining unread rows
+    try std.testing.expectEqual(@as(u64, 2), telemetry.operations(.query));
+
+    var stmt = try conn.prepare(io, "SELECT ?");
+    defer conn.closeStatement(io, &stmt) catch {};
+    var binary_rows = try conn.executeRows(io, stmt, &.{.{ .int = 10 }});
+    try std.testing.expectEqualStrings("10", (try binary_rows.next(io)).?.values[0].?);
+    binary_rows.deinit(io);
+    // PREPARE + one completed streamed EXECUTE.
+    try std.testing.expectEqual(@as(u64, 2), telemetry.operations(.prepared));
+
+    var missing = try conn.callResults(io, "CALL zig_nonexistent_metrics_procedure()");
+    try std.testing.expectError(error.ServerError, missing.next(io));
+    missing.deinit(io);
+    try std.testing.expectEqual(@as(u64, 3), telemetry.operations(.query));
+    const query_index = @intFromEnum(mysql.CommandMetrics.Command.query);
+    const server_index = @intFromEnum(mysql.CommandMetrics.Outcome.server_error);
+    try std.testing.expectEqual(@as(u64, 1), telemetry.counts[query_index][server_index]);
+    conn.setCommandMetrics(null);
+}
