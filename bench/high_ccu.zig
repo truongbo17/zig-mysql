@@ -58,7 +58,7 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
         .max_open = pool_limit,
         .max_idle = pool_limit,
         .health_check_timeout = null,
-        .session_reset_timeout = null,
+        .session_reset_timeout = .fromSeconds(5),
         .connect_attempt_timeout = null,
     });
     defer pool.deinit(io);
