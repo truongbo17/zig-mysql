@@ -4,7 +4,7 @@ const mysql = @import("zig_mysql");
 extern "c" fn clock() c_long; // process CPU clock, diagnostic
 const worker_counts = [_]usize{ 1, 8, 32, 64, 128 };
 const iterations: usize = 32;
-const pool_limit: usize = 32;
+const pool_limit: usize = 8;
 
 const Worker = struct {
     io: std.Io,
