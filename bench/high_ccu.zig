@@ -4,7 +4,7 @@ const mysql = @import("zig_mysql");
 extern "c" fn clock() c_long; // process CPU clock, diagnostic
 const worker_counts = [_]usize{ 1, 8, 32, 64, 128 };
 const iterations: usize = 32;
-const pool_limit: usize = 32;
+const pool_limit: usize = 16;
 
 const Worker = struct {
     io: std.Io,
@@ -65,7 +65,10 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
     const tasks = try allocator.alloc(Worker, count);
     defer allocator.free(tasks);
     var group: std.Io.Group = .init;
-    defer group.cancel(io);
+    // await and cancel are alternative terminal operations in std.Io.Group.
+    // Only cancel unfinished tasks when a startup/wait error occurs.
+    var joined = false;
+    defer if (!joined) group.cancel(io);
     const cpu_before = clock();
     const began = std.Io.Clock.awake.now(io);
     for (tasks, 0..) |*task, index| {
@@ -74,6 +77,7 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
         try group.concurrent(io, Worker.task, .{task});
     }
     try group.await(io);
+    joined = true;
     const cpu_after = clock();
     for (tasks) |task| if (task.failure) |err| return err;
     const elapsed: u64 = @intCast(@max(1, began.untilNow(io, .awake).toNanoseconds()));
