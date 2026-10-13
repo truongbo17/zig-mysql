@@ -30,8 +30,7 @@ const Worker = struct {
     }
 };
 
-pub fn main(init: std.process.Init) !void {
-    const io = init.io;
+fn oneRound(io: std.Io) !void {
     var workers: [workers_count]Worker = undefined;
     var group: std.Io.Group = .init;
     var joined = false;
@@ -45,7 +44,13 @@ pub fn main(init: std.process.Init) !void {
     joined = true;
     for (&workers) |w| if (w.failure) |err| return err;
     const elapsed_ns: u64 = @intCast(@max(1, started.untilNow(io, .awake).toNanoseconds()));
-    std.debug.print("TLS_DIRECT_CLIENTS workers={d} operations={d} total_ms={d:.2}\\n",
-        .{ workers_count, workers_count * iterations,
+    std.debug.print("TLS_HANDSHAKE_ONLY workers={d} handshakes={d} total_ms={d:.2}\\n",
+        .{ workers_count, workers_count,
             @as(f64, @floatFromInt(elapsed_ns)) / 1e6 });
+}
+
+pub fn main(init: std.process.Init) !void {
+    // 128 rounds * 32 concurrent verified TLS handshakes, long enough for
+    // live RSS/fd polling; detects failure that requires repeated sessions.
+    for (0..128) |_| try oneRound(init.io);
 }
