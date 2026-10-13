@@ -25,12 +25,8 @@ const Worker = struct {
             },
         });
         defer conn.deinit(self.io);
-        for (0..iterations) |_| {
-            var result = try conn.query(self.io, "SELECT 1");
-            defer result.deinit();
-            if (!std.mem.eql(u8, result.value.rows.items[0].values[0].?, "1"))
-                return error.BadResult;
-        }
+        // Handshake and authenticate 32 independent TLS sessions in parallel;
+        // intentionally issue NO COM_QUERY to isolate connection lifecycle.
     }
 };
 
