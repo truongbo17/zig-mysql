@@ -58,6 +58,7 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
         .max_open = pool_limit,
         .max_idle = pool_limit,
         .health_check_timeout = .fromSeconds(3),
+        .diagnostic_skip_session_reset = true,
     });
     defer pool.deinit(io);
     const samples = try allocator.alloc(u64, count * iterations);
