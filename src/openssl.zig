@@ -112,7 +112,7 @@ pub const Session = struct {
     }
 
     pub fn deinit(self: *Session) void {
-        _ = SSL_shutdown(self.ssl);
+        // Diagnostic: deliberately skip nonblocking SSL_shutdown on teardown.
         SSL_free(self.ssl);
         SSL_CTX_free(self.ctx);
     }
