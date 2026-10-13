@@ -1,5 +1,9 @@
 const std = @import("std");
 const client = @import("client.zig");
+const builtin = @import("builtin");
+const PollNfds = if (builtin.target.os.tag == .macos) c_uint else c_ulong;
+extern "c" fn poll(?[*]u8, PollNfds, c_int) c_int;
+
 
 pub const PoolConfig = struct {
     connection: client.Config,
@@ -180,7 +184,10 @@ pub const Pool = struct {
                 self.waits += 1;
                 self.mutex.unlock(io);
             }
-            try std.Io.sleep(io, .fromMilliseconds(1), .awake);
+            // DIAGNOSTIC: avoid std.Io.sleep scheduling for the checkout
+            // loop while retaining cooperative cancellation checkpoints.
+            try io.checkCancel();
+            _ = poll(null, 0, 1);
         }
     }
 
