@@ -80,6 +80,10 @@ if [[ "$(uname -s)" == Linux ]]; then
   timeout 120s zig build -Doptimize=ReleaseFast cache-bench
   timeout 90s zig build -Doptimize=ReleaseFast metrics-bench
   timeout 120s zig build -Doptimize=ReleaseFast batch-bench
+  for direct_repeat in 1 2 3; do
+    echo "PLAIN_DIRECT_REPEAT=${direct_repeat}/3"
+    timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast tls-direct-bench
+  done
   timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast high-ccu-bench
 else
   zig build -Doptimize=ReleaseFast bench
@@ -106,10 +110,7 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
     docker cp "$name":/var/lib/mysql/ca.pem "$ca_file"
     zig build tls-integration
     if [[ "$(uname -s)" == Linux ]]; then
-      for direct_repeat in 1 2 3; do
-        echo "TLS_DIRECT_REPEAT=${direct_repeat}/3"
-        timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast tls-direct-bench
-      done
+      echo "TLS_DIRECT_CONTROL_SKIPPED: plaintext control ran against MySQL8.0"
       echo "TLS_DIAGNOSTIC: pooled high CCU matrix skipped ONLY in diagnostic branch"
 
     fi
