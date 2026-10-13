@@ -379,6 +379,18 @@ over TCP and **4,451.0 req/s, p99 89.097 ms** over verified TLS. Zig
 diagnostic only; they are **not** staging SLAs or 24-hour production
 certification. See [Sprint D4 methodology](docs/SPRINT_D4_CCU.md).
 
+## Experimental OpenSSL socket readiness (Sprint D3, issue #30)
+
+The experimental POSIX OpenSSL backend reacts to
+`SSL_ERROR_WANT_READ`/`SSL_ERROR_WANT_WRITE` with bounded `poll(2)`
+read/write readiness checks instead of retrying at 1 ms intervals.
+It retains OpenSSL 3 peer certificate/hostname verification, nonblocking
+file descriptors, and bounded cancellation checks via `std.Io`.
+This currently supports only Linux/macOS, **not** a native Zig
+event-loop registration. The Threaded runtime still occupies a worker
+while waiting; there is no demonstrated CPU win yet. See
+[TLS readiness review criteria](docs/SPRINT_D3_TLS_READINESS.md).
+
 ## Connection pooling
 
 `Pool` limits the number of live MySQL connections and waits when all connections

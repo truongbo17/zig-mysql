@@ -150,8 +150,24 @@ pub const ProcedureResults = struct {
     done: bool = false,
     parts: usize = 0,
     final_ok: ?Ok = null,
+    telemetry_started: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
+    telemetry_finished: bool = false,
+    telemetry_deadline_wait: bool = false,
+
+    fn finishTelemetry(self: *ProcedureResults, io: std.Io, outcome: metrics.Outcome) void {
+        if (self.telemetry_finished) return;
+        self.telemetry_finished = true;
+        if (self.telemetry_started) |instant| self.client.observeCommand(io, instant, .query, outcome);
+    }
 
     pub fn next(self: *ProcedureResults, io: std.Io) !?Result {
+        return self.nextInternal(io) catch |err| {
+            if (!self.telemetry_deadline_wait) self.finishTelemetry(io, classifyMetricError(err));
+            return err;
+        };
+    }
+
+    fn nextInternal(self: *ProcedureResults, io: std.Io) !?Result {
         if (self.client.broken) return error.ConnectionBroken;
         if (self.done) return null;
         if (self.parts >= 256) {
@@ -169,6 +185,7 @@ pub const ProcedureResults = struct {
             self.done = true;
             self.client.active_stream = false;
             if (part.result.value == .ok) self.final_ok = part.result.value.ok;
+            if (!self.telemetry_deadline_wait) self.finishTelemetry(io, .success);
         }
         return part.result;
     }
@@ -178,6 +195,8 @@ pub const ProcedureResults = struct {
     pub fn nextWithTimeout(self: *ProcedureResults, io: std.Io, timeout: std.Io.Duration) !?Result {
         if (self.client.broken) return error.ConnectionBroken;
         if (self.done) return null;
+        self.telemetry_deadline_wait = true;
+        defer self.telemetry_deadline_wait = false;
         const Outcome = union(enum) {
             part: anyerror!?Result,
             timer: anyerror!void,
@@ -199,6 +218,7 @@ pub const ProcedureResults = struct {
         }
         select.concurrent(.part, ProcedureResults.next, .{ self, io }) catch |err| {
             self.client.broken = true;
+            self.finishTelemetry(io, classifyMetricError(err));
             return err;
         };
         select.concurrent(.timer, std.Io.sleep, .{ io, timeout, .awake }) catch |err| {
@@ -209,13 +229,19 @@ pub const ProcedureResults = struct {
             self.client.broken = true;
             return err;
         }) {
-            .part => |response| return response catch |err| {
-                if (err == error.Canceled) self.client.broken = true;
-                return err;
+            .part => |response| {
+                const value = response catch |err| {
+                    if (err == error.Canceled) self.client.broken = true;
+                    self.finishTelemetry(io, classifyMetricError(err));
+                    return err;
+                };
+                if (self.done) self.finishTelemetry(io, .success);
+                return value;
             },
             .timer => |elapsed| {
                 self.client.broken = true;
                 try elapsed;
+                self.finishTelemetry(io, .timeout);
                 return error.QueryTimeout;
             },
         }
@@ -236,6 +262,7 @@ pub const ProcedureResults = struct {
         }
         self.done = true;
         self.client.active_stream = false;
+        self.finishTelemetry(io, if (self.client.broken) .transport_error else .success);
     }
 };
 
@@ -254,8 +281,25 @@ pub const RowStream = struct {
     /// True for prepared binary rows, false for text query rows.
     binary: bool = false,
     done: bool = false,
+    telemetry_started: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
+    telemetry_category: metrics.Command = .query,
+    telemetry_finished: bool = false,
+    telemetry_deadline_wait: bool = false,
+
+    fn finishTelemetry(self: *RowStream, io: std.Io, outcome: metrics.Outcome) void {
+        if (self.telemetry_finished) return;
+        self.telemetry_finished = true;
+        if (self.telemetry_started) |instant| self.client.observeCommand(io, instant, self.telemetry_category, outcome);
+    }
 
     pub fn next(self: *RowStream, io: std.Io) !?Row {
+        return self.nextInternal(io) catch |err| {
+            if (!self.telemetry_deadline_wait) self.finishTelemetry(io, classifyMetricError(err));
+            return err;
+        };
+    }
+
+    fn nextInternal(self: *RowStream, io: std.Io) !?Row {
         if (self.client.broken) return error.ConnectionBroken;
         if (self.done) return null;
         self.row_arena.deinit();
@@ -286,6 +330,7 @@ pub const RowStream = struct {
                 try self.client.drainRemaining(io, self.binary);
                 return error.MultipleResults;
             }
+            if (!self.telemetry_deadline_wait) self.finishTelemetry(io, .success);
             return null;
         }
         errdefer self.client.broken = true;
@@ -319,6 +364,8 @@ pub const RowStream = struct {
     pub fn nextWithTimeout(self: *RowStream, io: std.Io, timeout: std.Io.Duration) !?Row {
         if (self.client.broken) return error.ConnectionBroken;
         if (self.done) return null;
+        self.telemetry_deadline_wait = true;
+        defer self.telemetry_deadline_wait = false;
         const Outcome = union(enum) {
             row: anyerror!?Row,
             timer: anyerror!void,
@@ -331,6 +378,7 @@ pub const RowStream = struct {
         }
         select.concurrent(.row, RowStream.next, .{ self, io }) catch |err| {
             self.client.broken = true;
+            self.finishTelemetry(io, classifyMetricError(err));
             return err;
         };
         select.concurrent(.timer, std.Io.sleep, .{ io, timeout, .awake }) catch |err| {
@@ -341,13 +389,19 @@ pub const RowStream = struct {
             self.client.broken = true;
             return err;
         }) {
-            .row => |response| return response catch |err| {
-                if (err == error.Canceled) self.client.broken = true;
-                return err;
+            .row => |response| {
+                const value = response catch |err| {
+                    if (err == error.Canceled) self.client.broken = true;
+                    self.finishTelemetry(io, classifyMetricError(err));
+                    return err;
+                };
+                if (self.done) self.finishTelemetry(io, .success);
+                return value;
             },
             .timer => |elapsed| {
                 self.client.broken = true;
                 try elapsed;
+                self.finishTelemetry(io, .timeout);
                 return error.QueryTimeout;
             },
         }
@@ -373,6 +427,7 @@ pub const RowStream = struct {
             };
         }
         self.client.active_stream = false;
+        self.finishTelemetry(io, if (self.client.broken) .transport_error else .success);
         self.row_arena.deinit();
         self.metadata_arena.deinit();
     }
@@ -583,6 +638,19 @@ pub const Client = struct {
             self.observeCommand(io, started, category, outcome);
         }
         if (self.broken) { outcome = .transport_error; return error.ConnectionBroken; }
+        // A TLS socket is nonblocking. Enforce the deadline in SSL I/O
+        // itself: no racing Select timer task, no losing operation cleanup,
+        // and no reuse of an uncertain session after a timeout.
+        if (self.wire.tls) |*session| {
+            session.setDeadline(io, timeout);
+            defer session.clearDeadline();
+            return @call(.auto, work, args) catch |err| {
+                outcome = classifyMetricError(err);
+                if (err == error.QueryTimeout or err == error.Canceled)
+                    self.broken = true;
+                return err;
+            };
+        }
         const Outcome = union(enum) {
             operation: anyerror!T,
             timer: anyerror!void,
@@ -732,15 +800,29 @@ pub const Client = struct {
     /// untrusted parameters. OUT/INOUT session variables are visible only
     /// after all result parts are consumed or safely drained.
     pub fn callResults(self: *Client, io: std.Io, sql: []const u8) !ProcedureResults {
-        try self.command(io, 0x03, sql);
+        const started = if (self.command_metrics != null and !self.metrics_suppressed) std.Io.Clock.awake.now(io) else null;
+        self.command(io, 0x03, sql) catch |err| {
+            self.observeCommand(io, started, .query, classifyMetricError(err));
+            return err;
+        };
         self.active_stream = true;
-        return .{ .client = self };
+        return .{ .client = self, .telemetry_started = started };
     }
 
     /// Stream a SELECT result without buffering all rows.
     pub fn queryRows(self: *Client, io: std.Io, sql: []const u8) !RowStream {
-        try self.command(io, 0x03, sql);
-        return self.readRowStream(io, false);
+        const started = if (self.command_metrics != null and !self.metrics_suppressed) std.Io.Clock.awake.now(io) else null;
+        self.command(io, 0x03, sql) catch |err| {
+            self.observeCommand(io, started, .query, classifyMetricError(err));
+            return err;
+        };
+        var stream = self.readRowStream(io, false) catch |err| {
+            self.observeCommand(io, started, .query, classifyMetricError(err));
+            return err;
+        };
+        stream.telemetry_started = started;
+        stream.telemetry_category = .query;
+        return stream;
     }
 
     fn readRowStream(self: *Client, io: std.Io, binary: bool) !RowStream {
@@ -920,8 +1002,18 @@ pub const Client = struct {
     /// Stream prepared binary rows with one-row lifetime and bounded memory.
     /// The SELECT result must be fully read or the stream safely deinitialized.
     pub fn executeRows(self: *Client, io: std.Io, statement: Statement, params: []const Param) !RowStream {
-        try self.sendExecute(io, statement, params);
-        return self.readRowStream(io, true);
+        const started = if (self.command_metrics != null and !self.metrics_suppressed) std.Io.Clock.awake.now(io) else null;
+        self.sendExecute(io, statement, params) catch |err| {
+            self.observeCommand(io, started, .prepared, classifyMetricError(err));
+            return err;
+        };
+        var stream = self.readRowStream(io, true) catch |err| {
+            self.observeCommand(io, started, .prepared, classifyMetricError(err));
+            return err;
+        };
+        stream.telemetry_started = started;
+        stream.telemetry_category = .prepared;
+        return stream;
     }
 
     /// Bounded initial COM_STMT_EXECUTE / column metadata phase. Per-row
