@@ -20,7 +20,7 @@ const Worker = struct {
     fn checked(self: *@This()) !void {
         for (self.latencies_ns) |*duration| {
             const started = std.Io.Clock.awake.now(self.io);
-            const conn = try self.pool.acquireWithTimeout(self.io, .fromSeconds(10));
+            const conn = try self.pool.acquire(self.io);
             {
                 defer self.pool.release(self.io, conn);
                 var rows = try conn.queryWithTimeout(self.io, "SELECT 1", .fromSeconds(5));
@@ -57,7 +57,9 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
         .connection = try config(tls),
         .max_open = pool_limit,
         .max_idle = pool_limit,
-        .health_check_timeout = .fromSeconds(3),
+        .health_check_timeout = null,
+        .session_reset_timeout = .fromSeconds(5),
+        .connect_attempt_timeout = null,
     });
     defer pool.deinit(io);
     const samples = try allocator.alloc(u64, count * iterations);
@@ -65,7 +67,10 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
     const tasks = try allocator.alloc(Worker, count);
     defer allocator.free(tasks);
     var group: std.Io.Group = .init;
-    defer group.cancel(io);
+    // await and cancel are alternative terminal operations in std.Io.Group.
+    // Only cancel unfinished tasks when a startup/wait error occurs.
+    var joined = false;
+    defer if (!joined) group.cancel(io);
     const cpu_before = clock();
     const began = std.Io.Clock.awake.now(io);
     for (tasks, 0..) |*task, index| {
@@ -74,6 +79,7 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
         try group.concurrent(io, Worker.task, .{task});
     }
     try group.await(io);
+    joined = true;
     const cpu_after = clock();
     for (tasks) |task| if (task.failure) |err| return err;
     const elapsed: u64 = @intCast(@max(1, began.untilNow(io, .awake).toNanoseconds()));
