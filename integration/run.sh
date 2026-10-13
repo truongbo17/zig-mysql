@@ -106,7 +106,23 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
     docker cp "$name":/var/lib/mysql/ca.pem "$ca_file"
     zig build tls-integration
     if [[ "$(uname -s)" == Linux ]]; then
-      timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast high-ccu-tls-bench
+      if [[ "$(uname -s)" == Linux ]] && command -v apt-get >/dev/null; then
+        sudo apt-get update -qq
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gdb
+        zig build -Doptimize=ReleaseFast
+        for debug_repeat in 1 2 3; do
+          echo "TLS_GDB_REPEAT=${debug_repeat}/3"
+          MALLOC_CHECK_=3 timeout 180s gdb --batch --return-child-result \
+            -ex "set pagination off" -ex "set print thread-events off" \
+            -ex "run" -ex "thread apply all bt 16" \
+            --args ./zig-out/bin/zig-mysql-high-ccu-tls-bench || true
+        done
+      fi
+      for repeat in 1 2 3; do
+        echo "TLS_CCU_REPEAT_START attempt=${repeat}/3"
+        timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast high-ccu-tls-bench
+        echo "TLS_CCU_REPEAT_PASS attempt=${repeat}/3"
+      done
     fi
   fi
   if [[ "$(uname -s)" == Linux ]]; then
