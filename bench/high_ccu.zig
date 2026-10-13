@@ -2,6 +2,21 @@ const std = @import("std");
 const mysql = @import("zig_mysql");
 
 extern "c" fn clock() c_long; // process CPU clock, diagnostic
+// Diagnostic only: capture native abort/segfault stacks without ptrace
+// timing changes from gdb. glibc backtrace_symbols_fd writes to stderr.
+const SignalHandler = *const fn (c_int) callconv(.c) void;
+extern "c" fn signal(c_int, SignalHandler) SignalHandler;
+extern "c" fn backtrace([*]?*anyopaque, c_int) c_int;
+extern "c" fn backtrace_symbols_fd([*]const ?*anyopaque, c_int, c_int) void;
+extern "c" fn _exit(c_int) noreturn;
+
+fn onFatal(sig: c_int) callconv(.c) void {
+    var frames: [64]?*anyopaque = undefined;
+    const n = backtrace(&frames, 64);
+    backtrace_symbols_fd(&frames, n, 2);
+    _exit(128 + sig);
+}
+
 const worker_counts = [_]usize{ 1, 8, 32, 64, 128 };
 const iterations: usize = 32;
 const pool_limit: usize = 32;
@@ -65,7 +80,10 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
     const tasks = try allocator.alloc(Worker, count);
     defer allocator.free(tasks);
     var group: std.Io.Group = .init;
-    defer group.cancel(io);
+    // await and cancel are alternative terminal operations in std.Io.Group.
+    // Only cancel unfinished tasks when a startup/wait error occurs.
+    var joined = false;
+    defer if (!joined) group.cancel(io);
     const cpu_before = clock();
     const began = std.Io.Clock.awake.now(io);
     for (tasks, 0..) |*task, index| {
@@ -74,6 +92,7 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
         try group.concurrent(io, Worker.task, .{task});
     }
     try group.await(io);
+    joined = true;
     const cpu_after = clock();
     for (tasks) |task| if (task.failure) |err| return err;
     const elapsed: u64 = @intCast(@max(1, began.untilNow(io, .awake).toNanoseconds()));
@@ -97,6 +116,8 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
 }
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, tls: bool) !void {
+    _ = signal(11, onFatal); // SIGSEGV
+    _ = signal(6, onFatal); // SIGABRT
     for (worker_counts) |count| try scenario(allocator, io, tls, count);
 }
 
