@@ -35,6 +35,8 @@ pub const PoolConfig = struct {
     /// Recycle connections older than this at release or next checkout.
     /// Active queries are never forcibly interrupted by this setting.
     max_connection_age: ?std.Io.Duration = null,
+    /// DIAGNOSTIC ONLY: do not expose in a release; unsafe across borrowers.
+    diagnostic_skip_session_reset: bool = false,
 };
 
 pub const Stats = struct {
@@ -371,6 +373,7 @@ pub const Pool = struct {
         var reusable = !connection.broken and !connection.active_stream and !expired;
         var reset_failed = false;
         if (reusable and self.config.max_idle > 0) {
+            if (!self.config.diagnostic_skip_session_reset) {
             const reset = if (self.config.session_reset_timeout) |timeout|
                 connection.resetConnectionWithTimeout(io, timeout)
             else
@@ -391,6 +394,7 @@ pub const Pool = struct {
                     reset_failed = true;
                 };
             }
+            } // diagnostic-only reset bypass
         } else {
             reusable = false;
         }
