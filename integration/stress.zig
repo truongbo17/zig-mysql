@@ -51,12 +51,14 @@ test "concurrent acquisitions and fault injection respect hard pool limit" {
     // 32 * 100 operations, every operation also resets session on return.
     var workers: [32]Worker = undefined;
     var group: std.Io.Group = .init;
-    defer group.cancel(io);
+    var joined = false;
+    defer if (!joined) group.cancel(io);
     for (&workers) |*worker| {
         worker.* = .{ .io = io, .pool = &pool };
         try group.concurrent(io, Worker.run, .{worker});
     }
     try group.await(io);
+    joined = true;
     for (workers) |worker| if (worker.failure) |err| return err;
 
     var stats = pool.stats(io);
@@ -105,12 +107,14 @@ test "shared metrics recorder is race-free under 32 concurrent writers" {
     var shared: mysql.CommandMetrics.SharedRecorder = .{};
     var workers: [32]MetricsWorker = undefined;
     var group: std.Io.Group = .init;
-    defer group.cancel(io);
+    var joined = false;
+    defer if (!joined) group.cancel(io);
     for (&workers) |*worker| {
         worker.* = .{ .io = io, .shared = &shared };
         try group.concurrent(io, MetricsWorker.run, .{worker});
     }
     try group.await(io);
+    joined = true;
     const snapshot = shared.snapshot(io);
     try std.testing.expectEqual(@as(u64, 64_000), snapshot.operations(.query));
     try std.testing.expectEqual(@as(u64, 64_000), snapshot.buckets[@intFromEnum(mysql.CommandMetrics.Command.query)][0]);
