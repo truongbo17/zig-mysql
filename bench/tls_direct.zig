@@ -17,12 +17,9 @@ const Worker = struct {
     }
     fn execute(self: *@This()) !void {
         var conn = try mysql.Client.connect(self.allocator, self.io, .{
-            .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33307") },
-            .username = "root", .password = "zig_mysql_test", .database = "zigtest",
-            .tls = .{
-                .host = "MySQL_Server_8.4.11_Auto_Generated_Server_Certificate",
-                .ca_file = "/tmp/zig-mysql-test-ca.pem",
-            },
+            .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+            .username = "zigtest", .password = "zig_mysql_test", .database = "zigtest",
+            .tls = null,
         });
         defer conn.deinit(self.io);
         // Handshake and authenticate 32 independent TLS sessions in parallel;
@@ -44,7 +41,7 @@ fn oneRound(io: std.Io) !void {
     joined = true;
     for (&workers) |w| if (w.failure) |err| return err;
     const elapsed_ns: u64 = @intCast(@max(1, started.untilNow(io, .awake).toNanoseconds()));
-    std.debug.print("TLS_HANDSHAKE_ONLY workers={d} handshakes={d} total_ms={d:.2}\\n",
+    std.debug.print("PLAIN_HANDSHAKE_ONLY workers={d} handshakes={d} total_ms={d:.2}\\n",
         .{ workers_count, workers_count,
             @as(f64, @floatFromInt(elapsed_ns)) / 1e6 });
 }
