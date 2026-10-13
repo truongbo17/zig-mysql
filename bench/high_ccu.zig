@@ -20,7 +20,7 @@ const Worker = struct {
     fn checked(self: *@This()) !void {
         for (self.latencies_ns) |*duration| {
             const started = std.Io.Clock.awake.now(self.io);
-            const conn = try self.pool.acquireWithTimeout(self.io, .fromSeconds(10));
+            const conn = try self.pool.acquire(self.io);
             {
                 defer self.pool.release(self.io, conn);
                 var rows = try conn.queryWithTimeout(self.io, "SELECT 1", .fromSeconds(5));
