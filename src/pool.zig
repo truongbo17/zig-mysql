@@ -159,7 +159,7 @@ pub const Pool = struct {
         const started = std.Io.Clock.awake.now(io);
         var counted_wait = false;
         while (true) {
-            const conn = self.tryAcquire(io) catch |err| switch (err) {
+            const conn: ?*client.Client = self.tryAcquire(io) catch |err| switch (err) {
                 error.PoolExhausted => null,
                 else => return err,
             };
