@@ -35,3 +35,13 @@ soak and independent HA/security approval (OPS #13).
 - [ ] Repeat on isolated representative staging hardware
 
 Do not close issue #31 or production epic #13 without the evidence above.
+
+## 128-CCU lifetime and heap-corruption regression (#65)
+
+`std.Io.Group.await` and `std.Io.Group.cancel` are terminal alternatives.
+The benchmark/stress tests only cancel unfinished groups on exceptional exit,
+never after successful await. The profiler scans captured process logs and
+**fails CI** on glibc double-free/corruption or SIGSEGV signatures even when
+the process exit status incorrectly reports success. Logs are buffered into a
+seekable temporary file to avoid a pipe filling during a crash. This is a
+regression gate, not a substitute for repeated soak or a proven transport fix.
