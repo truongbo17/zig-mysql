@@ -138,6 +138,20 @@ pub fn build(b: *std.Build) void {
     const ccu_tls_step = b.step("high-ccu-tls-bench", "Run 1/8/32/64/128-CCU verified TLS matrix");
     ccu_tls_step.dependOn(&run_ccu_tls.step);
 
+    const direct_tls_module = b.createModule(.{
+        .root_source_file = b.path("bench/tls_direct.zig"),
+        .target = target, .optimize = optimize,
+    });
+    direct_tls_module.addImport("zig_mysql", module);
+    const direct_tls_exe = b.addExecutable(.{
+        .name = "zig-mysql-direct-tls-diagnostic",
+        .root_module = direct_tls_module,
+    });
+    const run_direct_tls = b.addRunArtifact(direct_tls_exe);
+    run_direct_tls.has_side_effects = true;
+    const direct_tls_step = b.step("tls-direct-bench", "Stress 32 direct TLS client sessions without Pool");
+    direct_tls_step.dependOn(&run_direct_tls.step);
+
     const soak_module = b.createModule(.{
         .root_source_file = b.path("integration/soak_local.zig"),
         .target = target,
