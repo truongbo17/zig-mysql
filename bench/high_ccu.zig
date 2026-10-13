@@ -65,7 +65,10 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
     const tasks = try allocator.alloc(Worker, count);
     defer allocator.free(tasks);
     var group: std.Io.Group = .init;
-    defer group.cancel(io);
+    // await and cancel are alternative terminal operations in std.Io.Group.
+    // Only cancel unfinished tasks when a startup/wait error occurs.
+    var joined = false;
+    defer if (!joined) group.cancel(io);
     const cpu_before = clock();
     const began = std.Io.Clock.awake.now(io);
     for (tasks, 0..) |*task, index| {
@@ -74,6 +77,7 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
         try group.concurrent(io, Worker.task, .{task});
     }
     try group.await(io);
+    joined = true;
     const cpu_after = clock();
     for (tasks) |task| if (task.failure) |err| return err;
     const elapsed: u64 = @intCast(@max(1, began.untilNow(io, .awake).toNanoseconds()));
@@ -103,5 +107,5 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, tls: bool) !void {
 pub fn main(init: std.process.Init) !void {
     // Pool instances are accessed by 128 concurrent workers. Use the
     // OS-backed thread-safe allocator, not a potentially unsynchronized GPA.
-    try run(std.heap.page_allocator, init.io, false);
+    try run(std.heap.smp_allocator, init.io, false);
 }
