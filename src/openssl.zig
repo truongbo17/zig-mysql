@@ -9,6 +9,10 @@ const std = @import("std");
 // currently does not handle. No MySQL C client library is used.
 // https://docs.openssl.org/3.0/man3/SSL_set1_host/
 // https://docs.openssl.org/3.2/man3/SSL_CTX_load_verify_locations/
+// DIAGNOSTIC ONLY: serialize TLS Session creation and teardown to isolate
+// cross-session native lifecycle races. Do not merge without profiling.
+var tls_lifecycle_mutex: std.Io.Mutex = .init;
+
 const SSL_METHOD = opaque {};
 const SSL_CTX = opaque {};
 const SSL = opaque {};
@@ -34,17 +38,47 @@ extern "crypto" fn X509_free(*X509) void;
 extern "ssl" fn SSL_read(*SSL, [*]u8, c_int) c_int;
 extern "ssl" fn SSL_write(*SSL, [*]const u8, c_int) c_int;
 extern "ssl" fn SSL_shutdown(*SSL) c_int;
+extern "crypto" fn ERR_get_error() c_ulong;
+extern "crypto" fn ERR_clear_error() void;
+extern "crypto" fn ERR_error_string_n(c_ulong, [*]u8, usize) void;
 
 pub const Session = struct {
     ctx: *SSL_CTX,
     ssl: *SSL,
+    /// Deadline scoped to one command; never shared across pool borrowers.
+    deadline_started: ?@TypeOf(std.Io.Clock.awake.now(@as(std.Io, undefined))) = null,
+    deadline_ns: ?i128 = null,
+
+    pub fn setDeadline(self: *Session, io: std.Io, duration: std.Io.Duration) void {
+        self.deadline_started = std.Io.Clock.awake.now(io);
+        self.deadline_ns = duration.toNanoseconds();
+    }
+
+    pub fn clearDeadline(self: *Session) void {
+        self.deadline_started = null;
+        self.deadline_ns = null;
+    }
+
+    fn checkDeadline(self: *Session, io: std.Io) !void {
+        if (self.deadline_started) |start| {
+            if (start.untilNow(io, .awake).toNanoseconds() >= self.deadline_ns.?)
+                return error.QueryTimeout;
+        }
+    }
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, fd: c_int, host: []const u8, ca_file: ?[]const u8) !Session {
+        tls_lifecycle_mutex.lockUncancelable(io);
+        var setup_locked = true;
+        defer if (setup_locked) tls_lifecycle_mutex.unlock(io);
         if (host.len == 0 or std.mem.indexOfScalar(u8, host, 0) != null) return error.InvalidTlsHost;
         const host_z = try allocator.dupeSentinel(u8, host, 0);
         defer allocator.free(host_z);
         const ctx = SSL_CTX_new(TLS_client_method()) orelse return error.TlsContextFailed;
-        errdefer SSL_CTX_free(ctx);
+        errdefer {
+            if (!setup_locked) tls_lifecycle_mutex.lockUncancelable(io);
+            SSL_CTX_free(ctx);
+            if (!setup_locked) tls_lifecycle_mutex.unlock(io);
+        }
         SSL_CTX_set_verify(ctx, 1, null); // SSL_VERIFY_PEER
         if (ca_file) |path| {
             const path_z = try allocator.dupeSentinel(u8, path, 0);
@@ -54,7 +88,11 @@ pub const Session = struct {
             return error.TlsCaLoadFailed;
         }
         const ssl = SSL_new(ctx) orelse return error.TlsSessionFailed;
-        errdefer SSL_free(ssl);
+        errdefer {
+            if (!setup_locked) tls_lifecycle_mutex.lockUncancelable(io);
+            SSL_free(ssl);
+            if (!setup_locked) tls_lifecycle_mutex.unlock(io);
+        }
         // The socket MUST be nonblocking: SSL_read/SSL_write/SSL_connect
         // can then be cancelled safely by the Zig Io runtime on WANT_READ /
         // WANT_WRITE, rather than holding an uninterruptible OpenSSL thread.
@@ -71,7 +109,14 @@ pub const Session = struct {
         if (SSL_set1_host(ssl, host_z) != 1) return error.TlsHostFailed;
         // SSL_CTRL_SET_TLSEXT_HOSTNAME = 55, TLSEXT_NAMETYPE_host_name = 0.
         if (SSL_ctrl(ssl, 55, 0, @ptrCast(host_z.ptr)) != 1) return error.TlsHostFailed;
+        // Release the global native setup mutex before asynchronous TLS
+        // handshake; keep native allocation/free serialized across sessions.
+        tls_lifecycle_mutex.unlock(io);
+        setup_locked = false;
         while (true) {
+            // OpenSSL ERR queue is thread-local; previous failed TLS attempts
+            // on this thread must not contaminate SSL_get_error classification.
+            ERR_clear_error();
             const n = SSL_connect(ssl);
             if (n == 1) break;
             switch (SSL_get_error(ssl, n)) {
@@ -85,7 +130,9 @@ pub const Session = struct {
         return .{ .ctx = ctx, .ssl = ssl };
     }
 
-    pub fn deinit(self: *Session) void {
+    pub fn deinit(self: *Session, io: std.Io) void {
+        tls_lifecycle_mutex.lockUncancelable(io);
+        defer tls_lifecycle_mutex.unlock(io);
         _ = SSL_shutdown(self.ssl);
         SSL_free(self.ssl);
         SSL_CTX_free(self.ctx);
@@ -94,16 +141,26 @@ pub const Session = struct {
     pub fn readExact(self: *Session, io: std.Io, destination: []u8) !void {
         var used: usize = 0;
         while (used < destination.len) {
+            try self.checkDeadline(io);
             const count: c_int = @intCast(@min(destination.len - used, std.math.maxInt(c_int)));
+            ERR_clear_error();
             const n = SSL_read(self.ssl, destination[used..].ptr, count);
             if (n <= 0) {
-                switch (SSL_get_error(self.ssl, n)) {
+                const ssl_error = SSL_get_error(self.ssl, n);
+                switch (ssl_error) {
                     2, 3 => {
                         try std.Io.sleep(io, .fromMilliseconds(1), .awake);
                         continue;
                     },
                     6 => return error.EndOfStream, // SSL_ERROR_ZERO_RETURN
-                    else => return error.TlsReadFailed,
+                    else => {
+                        var error_buffer: [256]u8 = undefined;
+                        const code = ERR_get_error();
+                        @memset(&error_buffer, 0);
+                        ERR_error_string_n(code, &error_buffer, error_buffer.len);
+                        std.log.err("TLS_DIAG SSL_read n={d} ssl_error={d} openssl={s}", .{ n, ssl_error, std.mem.sliceTo(&error_buffer, 0) });
+                        return error.TlsReadFailed;
+                    },
                 }
             }
             used += @intCast(n);
@@ -113,7 +170,9 @@ pub const Session = struct {
     pub fn writeAll(self: *Session, io: std.Io, bytes: []const u8) !void {
         var used: usize = 0;
         while (used < bytes.len) {
+            try self.checkDeadline(io);
             const count: c_int = @intCast(@min(bytes.len - used, std.math.maxInt(c_int)));
+            ERR_clear_error();
             const n = SSL_write(self.ssl, bytes[used..].ptr, count);
             if (n <= 0) {
                 switch (SSL_get_error(self.ssl, n)) {

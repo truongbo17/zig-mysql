@@ -15,7 +15,7 @@ pub const Wire = struct {
     }
 
     pub fn close(self: *Wire, io: std.Io) void {
-        if (self.tls) |*session| session.deinit();
+        if (self.tls) |*session| session.deinit(io);
         self.stream.close(io);
     }
 
