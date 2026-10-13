@@ -74,3 +74,28 @@ test "nonblocking TLS deadline covers handshake, buffered SQL and pool recycle" 
     pool.release(io, reused);
     try std.testing.expectEqual(@as(usize, 0), pool.stats(io).in_use);
 }
+
+test "TLS failed certificate verification never poisons a later valid session on same thread" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const wrong: mysql.Config = .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33307") },
+        .username = "root", .password = "zig_mysql_test", .database = "zigtest",
+        .tls = .{ .host = "wrong.example", .ca_file = "/tmp/zig-mysql-test-ca.pem" },
+    };
+    try std.testing.expectError(error.TlsHandshakeFailed,
+        mysql.Client.connect(std.testing.allocator, io, wrong));
+
+    var correct = wrong;
+    correct.tls = .{
+        .host = "MySQL_Server_8.4.11_Auto_Generated_Server_Certificate",
+        .ca_file = "/tmp/zig-mysql-test-ca.pem",
+    };
+    var conn = try mysql.Client.connect(std.testing.allocator, io, correct);
+    defer conn.deinit(io);
+    try conn.pingWithTimeout(io, .fromSeconds(2));
+    var result = try conn.queryWithTimeout(io, "SELECT 1", .fromSeconds(2));
+    defer result.deinit();
+    try std.testing.expectEqualStrings("1", result.value.rows.items[0].values[0].?);
+}
