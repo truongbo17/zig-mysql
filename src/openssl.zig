@@ -112,7 +112,8 @@ pub const Session = struct {
     }
 
     pub fn deinit(self: *Session) void {
-        _ = SSL_shutdown(self.ssl);
+        // DIAGNOSTIC ONLY: OpenSSL SSL_free releases the TLS session;
+        // compare teardown with no extra nonblocking SSL_shutdown attempt.
         SSL_free(self.ssl);
         SSL_CTX_free(self.ctx);
     }
