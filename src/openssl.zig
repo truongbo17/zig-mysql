@@ -9,6 +9,9 @@ const std = @import("std");
 // currently does not handle. No MySQL C client library is used.
 // https://docs.openssl.org/3.0/man3/SSL_set1_host/
 // https://docs.openssl.org/3.2/man3/SSL_CTX_load_verify_locations/
+// DIAGNOSTIC ONLY: test whether concurrent native SSL calls trigger #65.
+var openssl_io_mutex: std.Io.Mutex = .init;
+
 const SSL_METHOD = opaque {};
 const SSL_CTX = opaque {};
 const SSL = opaque {};
@@ -97,10 +100,13 @@ pub const Session = struct {
         while (true) {
             // OpenSSL ERR queue is thread-local; previous failed TLS attempts
             // on this thread must not contaminate SSL_get_error classification.
+            openssl_io_mutex.lockUncancelable(io);
             ERR_clear_error();
             const n = SSL_connect(ssl);
+            const ssl_error = if (n != 1) SSL_get_error(ssl, n) else 0;
+            openssl_io_mutex.unlock(io);
             if (n == 1) break;
-            switch (SSL_get_error(ssl, n)) {
+            switch (ssl_error) {
                 2, 3 => try std.Io.sleep(io, .fromMilliseconds(1), .awake), // WANT_READ/WRITE
                 else => return error.TlsHandshakeFailed,
             }
@@ -122,10 +128,12 @@ pub const Session = struct {
         while (used < destination.len) {
             try self.checkDeadline(io);
             const count: c_int = @intCast(@min(destination.len - used, std.math.maxInt(c_int)));
+            openssl_io_mutex.lockUncancelable(io);
             ERR_clear_error();
             const n = SSL_read(self.ssl, destination[used..].ptr, count);
+            const ssl_error = if (n <= 0) SSL_get_error(self.ssl, n) else 0;
+            openssl_io_mutex.unlock(io);
             if (n <= 0) {
-                const ssl_error = SSL_get_error(self.ssl, n);
                 switch (ssl_error) {
                     2, 3 => {
                         try std.Io.sleep(io, .fromMilliseconds(1), .awake);
@@ -151,10 +159,13 @@ pub const Session = struct {
         while (used < bytes.len) {
             try self.checkDeadline(io);
             const count: c_int = @intCast(@min(bytes.len - used, std.math.maxInt(c_int)));
+            openssl_io_mutex.lockUncancelable(io);
             ERR_clear_error();
             const n = SSL_write(self.ssl, bytes[used..].ptr, count);
+            const ssl_error = if (n <= 0) SSL_get_error(self.ssl, n) else 0;
+            openssl_io_mutex.unlock(io);
             if (n <= 0) {
-                switch (SSL_get_error(self.ssl, n)) {
+                switch (ssl_error) {
                     2, 3 => {
                         try std.Io.sleep(io, .fromMilliseconds(1), .awake);
                         continue;
