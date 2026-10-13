@@ -1,5 +1,9 @@
 const std = @import("std");
 const client = @import("client.zig");
+const builtin = @import("builtin");
+const PollNfds = if (builtin.target.os.tag == .macos) c_uint else c_ulong;
+extern "c" fn poll(?[*]u8, PollNfds, c_int) c_int;
+
 
 pub const PoolConfig = struct {
     connection: client.Config,
@@ -152,34 +156,38 @@ pub const Pool = struct {
     /// If a connection becomes available exactly when the timer expires,
     /// the losing acquire is joined and its connection safely returned to
     /// the pool; no slot or socket is leaked.
+    /// DIAGNOSTIC ONLY: avoid a racing std.Io.Select loser task for
+    /// checkout. The 1ms cooperative wait is NOT the final production
+    /// implementation: in-flight connect/health I/O may exceed deadline.
     pub fn acquireWithTimeout(self: *Pool, io: std.Io, timeout: std.Io.Duration) !*client.Client {
-        const Outcome = union(enum) {
-            acquired: anyerror!*client.Client,
-            timer: anyerror!void,
-        };
-        var slots: [2]Outcome = undefined;
-        var select: std.Io.Select(Outcome) = .init(io, &slots);
-        defer {
-            while (select.cancel()) |remaining| switch (remaining) {
-                .acquired => |response| {
-                    if (response) |connection| {
-                        self.release(io, connection);
-                    } else |_| {}
-                },
-                .timer => {},
+        const started = std.Io.Clock.awake.now(io);
+        var counted_wait = false;
+        while (true) {
+            const conn: ?*client.Client = self.tryAcquire(io) catch |err| switch (err) {
+                error.PoolExhausted => null,
+                else => return err,
             };
-        }
-        try select.concurrent(.acquired, Pool.acquire, .{ self, io });
-        try select.concurrent(.timer, std.Io.sleep, .{ io, timeout, .awake });
-        switch (try select.await()) {
-            .acquired => |response| return try response,
-            .timer => |elapsed| {
-                try elapsed;
+            const elapsed_ns = started.untilNow(io, .awake).toNanoseconds();
+            if (conn) |connection| {
+                if (elapsed_ns < timeout.toNanoseconds()) return connection;
+                self.release(io, connection);
+            }
+            if (elapsed_ns >= timeout.toNanoseconds()) {
                 self.mutex.lockUncancelable(io);
                 self.acquire_timeouts += 1;
                 self.mutex.unlock(io);
                 return error.PoolAcquireTimeout;
-            },
+            }
+            if (!counted_wait) {
+                counted_wait = true;
+                self.mutex.lockUncancelable(io);
+                self.waits += 1;
+                self.mutex.unlock(io);
+            }
+            // DIAGNOSTIC: avoid std.Io.sleep scheduling for the checkout
+            // loop while retaining cooperative cancellation checkpoints.
+            try io.checkCancel();
+            _ = poll(null, 0, 1);
         }
     }
 
