@@ -20,7 +20,7 @@ const Worker = struct {
     fn checked(self: *@This()) !void {
         for (self.latencies_ns) |*duration| {
             const started = std.Io.Clock.awake.now(self.io);
-            const conn = try self.pool.acquireWithTimeout(self.io, .fromSeconds(10));
+            const conn = try self.pool.acquire(self.io);
             {
                 defer self.pool.release(self.io, conn);
                 var rows = try conn.queryWithTimeout(self.io, "SELECT 1", .fromSeconds(5));
@@ -57,7 +57,9 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
         .connection = try config(tls),
         .max_open = pool_limit,
         .max_idle = pool_limit,
-        .health_check_timeout = .fromSeconds(3),
+        .health_check_timeout = null,
+        .session_reset_timeout = null,
+        .connect_attempt_timeout = null,
     });
     defer pool.deinit(io);
     const samples = try allocator.alloc(u64, count * iterations);
