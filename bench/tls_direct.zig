@@ -1,6 +1,22 @@
 const std = @import("std");
 const mysql = @import("zig_mysql");
 
+// Diagnostic only: native crash stack in the failing thread without gdb
+// scheduling changes. Not async-signal-safe under every libc implementation.
+const SignalHandler = *const fn (c_int) callconv(.c) void;
+extern "c" fn signal(c_int, SignalHandler) SignalHandler;
+extern "c" fn backtrace([*]?*anyopaque, c_int) c_int;
+extern "c" fn backtrace_symbols_fd([*]const ?*anyopaque, c_int, c_int) void;
+extern "c" fn _exit(c_int) noreturn;
+
+fn onFatal(sig: c_int) callconv(.c) void {
+    var frames: [64]?*anyopaque = undefined;
+    const n = backtrace(&frames, 64);
+    backtrace_symbols_fd(&frames, n, 2);
+    _exit(128 + sig);
+}
+
+
 const workers_count = 32;
 const iterations = 128;
 
@@ -50,6 +66,8 @@ fn oneRound(io: std.Io) !void {
 }
 
 pub fn main(init: std.process.Init) !void {
+    _ = signal(11, onFatal); // SIGSEGV
+    _ = signal(6, onFatal); // SIGABRT
     // 128 rounds * 32 concurrent verified TLS handshakes, long enough for
     // live RSS/fd polling; detects failure that requires repeated sessions.
     for (0..128) |_| try oneRound(init.io);
