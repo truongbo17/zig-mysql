@@ -68,12 +68,17 @@ pub const Session = struct {
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, fd: c_int, host: []const u8, ca_file: ?[]const u8) !Session {
         tls_lifecycle_mutex.lockUncancelable(io);
-        defer tls_lifecycle_mutex.unlock(io);
+        var setup_locked = true;
+        defer if (setup_locked) tls_lifecycle_mutex.unlock(io);
         if (host.len == 0 or std.mem.indexOfScalar(u8, host, 0) != null) return error.InvalidTlsHost;
         const host_z = try allocator.dupeSentinel(u8, host, 0);
         defer allocator.free(host_z);
         const ctx = SSL_CTX_new(TLS_client_method()) orelse return error.TlsContextFailed;
-        errdefer SSL_CTX_free(ctx);
+        errdefer {
+            if (!setup_locked) tls_lifecycle_mutex.lockUncancelable(io);
+            SSL_CTX_free(ctx);
+            if (!setup_locked) tls_lifecycle_mutex.unlock(io);
+        }
         SSL_CTX_set_verify(ctx, 1, null); // SSL_VERIFY_PEER
         if (ca_file) |path| {
             const path_z = try allocator.dupeSentinel(u8, path, 0);
@@ -83,7 +88,11 @@ pub const Session = struct {
             return error.TlsCaLoadFailed;
         }
         const ssl = SSL_new(ctx) orelse return error.TlsSessionFailed;
-        errdefer SSL_free(ssl);
+        errdefer {
+            if (!setup_locked) tls_lifecycle_mutex.lockUncancelable(io);
+            SSL_free(ssl);
+            if (!setup_locked) tls_lifecycle_mutex.unlock(io);
+        }
         // The socket MUST be nonblocking: SSL_read/SSL_write/SSL_connect
         // can then be cancelled safely by the Zig Io runtime on WANT_READ /
         // WANT_WRITE, rather than holding an uninterruptible OpenSSL thread.
@@ -100,6 +109,10 @@ pub const Session = struct {
         if (SSL_set1_host(ssl, host_z) != 1) return error.TlsHostFailed;
         // SSL_CTRL_SET_TLSEXT_HOSTNAME = 55, TLSEXT_NAMETYPE_host_name = 0.
         if (SSL_ctrl(ssl, 55, 0, @ptrCast(host_z.ptr)) != 1) return error.TlsHostFailed;
+        // Release the global native setup mutex before asynchronous TLS
+        // handshake; keep native allocation/free serialized across sessions.
+        tls_lifecycle_mutex.unlock(io);
+        setup_locked = false;
         while (true) {
             // OpenSSL ERR queue is thread-local; previous failed TLS attempts
             // on this thread must not contaminate SSL_get_error classification.
