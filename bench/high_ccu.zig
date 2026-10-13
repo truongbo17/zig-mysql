@@ -107,5 +107,5 @@ pub fn run(allocator: std.mem.Allocator, io: std.Io, tls: bool) !void {
 pub fn main(init: std.process.Init) !void {
     // Pool instances are accessed by 128 concurrent workers. Use the
     // OS-backed thread-safe allocator, not a potentially unsynchronized GPA.
-    try run(std.heap.page_allocator, init.io, false);
+    try run(std.heap.smp_allocator, init.io, false);
 }
