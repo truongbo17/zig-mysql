@@ -50,7 +50,8 @@ def sample(pid):
         root = Path("/proc") / str(candidate)
         try:
             executable = os.path.basename(os.readlink(root / "exe"))
-            if not executable.startswith("zig-mysql-high-ccu"):
+            if not (executable.startswith("zig-mysql-high-ccu") or
+                    executable.startswith("zig-mysql-direct-tls")):
                 continue
             status = (root / "status").read_text().splitlines()
             value = next((line.split()[1] for line in status if line.startswith("VmRSS:")), None)
