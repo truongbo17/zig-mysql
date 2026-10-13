@@ -34,6 +34,8 @@ extern "crypto" fn X509_free(*X509) void;
 extern "ssl" fn SSL_read(*SSL, [*]u8, c_int) c_int;
 extern "ssl" fn SSL_write(*SSL, [*]const u8, c_int) c_int;
 extern "ssl" fn SSL_shutdown(*SSL) c_int;
+extern "crypto" fn ERR_get_error() c_ulong;
+extern "crypto" fn ERR_error_string_n(c_ulong, [*]u8, usize) void;
 
 pub const Session = struct {
     ctx: *SSL_CTX,
@@ -126,7 +128,11 @@ pub const Session = struct {
                     },
                     6 => return error.EndOfStream, // SSL_ERROR_ZERO_RETURN
                     else => {
-                        std.log.err("TLS_DIAG SSL_read n={d} ssl_error={d}", .{ n, ssl_error });
+                        var error_buffer: [256]u8 = undefined;
+                        const code = ERR_get_error();
+                        @memset(&error_buffer, 0);
+                        ERR_error_string_n(code, &error_buffer, error_buffer.len);
+                        std.log.err("TLS_DIAG SSL_read n={d} ssl_error={d} openssl={s}", .{ n, ssl_error, std.mem.sliceTo(&error_buffer, 0) });
                         return error.TlsReadFailed;
                     },
                 }
