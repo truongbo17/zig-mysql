@@ -57,7 +57,7 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
         .connection = try config(tls),
         .max_open = pool_limit,
         .max_idle = pool_limit,
-        .health_check_timeout = null,
+        .health_check_timeout = .fromSeconds(3),
         .session_reset_timeout = null,
         .connect_attempt_timeout = null,
     });
