@@ -1374,3 +1374,30 @@ test "MySQL bounded prepared batch preflight and transactional partial failure" 
     try std.testing.expectEqualStrings("0", final.value.rows.items[0].values[0].?);
     final.deinit();
 }
+
+test "batch respects connection wire payload limit before any write" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest", .password = "zig_mysql_test", .database = "zigtest",
+    });
+    defer conn.deinit(io);
+    var create = try conn.query(io, "CREATE TEMPORARY TABLE zig_batch_wire_cap (id INT, label VARCHAR(200))");
+    create.deinit();
+    var stmt = try conn.prepare(io, "INSERT INTO zig_batch_wire_cap VALUES (?, ?)");
+    defer conn.closeStatement(io, &stmt) catch {};
+    const row = [_]mysql.Param{ .{ .int = 1 }, .{ .text = "payload greater than small wire cap" } };
+    const rows = [_][]const mysql.Param{&row};
+    var progress: mysql.Batch.Progress = .{};
+    const old_cap = conn.wire.max_message_size;
+    conn.wire.max_message_size = 20;
+    try std.testing.expectError(error.BatchPacketTooLarge,
+        mysql.Batch.execute(&conn, io, stmt, &rows, &progress, .{ .max_packet_bytes = 4096 }));
+    conn.wire.max_message_size = old_cap;
+    try std.testing.expectEqual(@as(usize, 0), progress.completed);
+    var check = try conn.query(io, "SELECT COUNT(*) FROM zig_batch_wire_cap");
+    defer check.deinit();
+    try std.testing.expectEqualStrings("0", check.value.rows.items[0].values[0].?);
+}
