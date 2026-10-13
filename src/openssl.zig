@@ -9,6 +9,10 @@ const std = @import("std");
 // currently does not handle. No MySQL C client library is used.
 // https://docs.openssl.org/3.0/man3/SSL_set1_host/
 // https://docs.openssl.org/3.2/man3/SSL_CTX_load_verify_locations/
+// DIAGNOSTIC ONLY: serialize TLS Session creation and teardown to isolate
+// cross-session native lifecycle races. Do not merge without profiling.
+var tls_lifecycle_mutex: std.Io.Mutex = .init;
+
 const SSL_METHOD = opaque {};
 const SSL_CTX = opaque {};
 const SSL = opaque {};
@@ -63,6 +67,8 @@ pub const Session = struct {
     }
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, fd: c_int, host: []const u8, ca_file: ?[]const u8) !Session {
+        tls_lifecycle_mutex.lockUncancelable(io);
+        defer tls_lifecycle_mutex.unlock(io);
         if (host.len == 0 or std.mem.indexOfScalar(u8, host, 0) != null) return error.InvalidTlsHost;
         const host_z = try allocator.dupeSentinel(u8, host, 0);
         defer allocator.free(host_z);
@@ -111,7 +117,9 @@ pub const Session = struct {
         return .{ .ctx = ctx, .ssl = ssl };
     }
 
-    pub fn deinit(self: *Session) void {
+    pub fn deinit(self: *Session, io: std.Io) void {
+        tls_lifecycle_mutex.lockUncancelable(io);
+        defer tls_lifecycle_mutex.unlock(io);
         _ = SSL_shutdown(self.ssl);
         SSL_free(self.ssl);
         SSL_CTX_free(self.ctx);
