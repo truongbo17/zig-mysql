@@ -583,6 +583,19 @@ pub const Client = struct {
             self.observeCommand(io, started, category, outcome);
         }
         if (self.broken) { outcome = .transport_error; return error.ConnectionBroken; }
+        // A TLS socket is nonblocking. Enforce the deadline in SSL I/O
+        // itself: no racing Select timer task, no losing operation cleanup,
+        // and no reuse of an uncertain session after a timeout.
+        if (self.wire.tls) |*session| {
+            session.setDeadline(io, timeout);
+            defer session.clearDeadline();
+            return @call(.auto, work, args) catch |err| {
+                outcome = classifyMetricError(err);
+                if (err == error.QueryTimeout or err == error.Canceled)
+                    self.broken = true;
+                return err;
+            };
+        }
         const Outcome = union(enum) {
             operation: anyerror!T,
             timer: anyerror!void,

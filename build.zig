@@ -133,6 +133,7 @@ pub fn build(b: *std.Build) void {
         .name = "zig-mysql-high-ccu-tls-bench",
         .root_module = ccu_tls_module,
     });
+    b.installArtifact(ccu_tls_exe);
     const run_ccu_tls = b.addRunArtifact(ccu_tls_exe);
     run_ccu_tls.has_side_effects = true;
     const ccu_tls_step = b.step("high-ccu-tls-bench", "Run 1/8/32/64/128-CCU verified TLS matrix");
