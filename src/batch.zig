@@ -90,7 +90,8 @@ pub fn execute(
     if (rows.len > options.max_rows) return error.BatchTooManyRows;
     // Validate the entire batch before its first write to avoid deterministic
     // local validation failures after earlier rows have been applied.
-    for (rows) |row| try validateRow(statement, row, options.max_packet_bytes);
+    const effective_budget = @min(options.max_packet_bytes, connection.wire.max_message_size);
+    for (rows) |row| try validateRow(statement, row, effective_budget);
     for (rows) |row| {
         var result = try connection.execute(io, statement, row);
         defer result.deinit();
