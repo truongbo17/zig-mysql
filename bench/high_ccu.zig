@@ -103,7 +103,11 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
 }
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, tls: bool) !void {
-    for (worker_counts) |count| try scenario(allocator, io, tls, count);
+    for (worker_counts) |count| {
+        try scenario(allocator, io, tls, count);
+        if (tls) std.debug.print("TLS_SCENARIO_POOL_DEINIT_COMPLETE workers={d}\n", .{count});
+    }
+    if (tls) std.debug.print("TLS_RUN_RETURNING_AFTER_128_CCU\n", .{});
 }
 
 pub fn main(init: std.process.Init) !void {
