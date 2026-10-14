@@ -75,8 +75,6 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
         .health_check_timeout = null,
         .session_reset_timeout = null,
         .connect_attempt_timeout = null,
-        .session_reset_timeout = .fromSeconds(5),
-        .connect_attempt_timeout = .fromSeconds(5),
     });
     defer pool.deinit(io);
     const samples = try allocator.alloc(u64, count * iterations);
