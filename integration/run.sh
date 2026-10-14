@@ -106,7 +106,20 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
     docker cp "$name":/var/lib/mysql/ca.pem "$ca_file"
     zig build tls-integration
     if [[ "$(uname -s)" == Linux ]]; then
-      timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast high-ccu-tls-bench
+      # Compile once; profile the actual benchmark process, not zig build.
+      zig build -Doptimize=ReleaseFast
+      for repeat in $(seq 1 5); do
+        echo "TLS_DIRECT_BINARY_START attempt=${repeat}/5"
+        timeout 180s python3 bench/profile_runner.py ./zig-out/bin/zig-mysql-high-ccu-tls-bench
+        echo "TLS_DIRECT_BINARY_PASS attempt=${repeat}/5"
+      done
+      # A/B control on the SAME runner: child executable vs Zig build runner.
+      # Fail this intentionally diagnostic PR if the run-artifact path crashes.
+      for replay in $(seq 1 5); do
+        echo "TLS_ZIG_BUILD_CONTROL_START attempt=${replay}/5"
+        timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast high-ccu-tls-bench
+        echo "TLS_ZIG_BUILD_CONTROL_PASS attempt=${replay}/5"
+      done
     fi
   fi
   if [[ "$(uname -s)" == Linux ]]; then
