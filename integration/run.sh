@@ -117,6 +117,15 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
         exit 1
       fi
       echo "TLS_NATIVE_ASAN_RUNTIME=$asan_lib"
+      # Negative control: run the same Zig Io/pool workload without OpenSSL.
+      # If the same ASan munmap failure occurs, sanitizer-only failures cannot
+      # be attributed to TLS/OpenSSL; retain both log sets as evidence.
+      tcp_asan_status=0
+      timeout 180s python3 bench/profile_runner.py \
+        env LD_PRELOAD="$asan_lib" \
+        ASAN_OPTIONS="detect_leaks=0:abort_on_error=1:malloc_context_size=40:fast_unwind_on_malloc=0:symbolize=1" \
+        ./zig-out/bin/zig-mysql-high-ccu-bench || tcp_asan_status=$?
+      echo "ASAN_PLAINTEXT_CONTROL_EXIT=$tcp_asan_status"
       for repeat in $(seq 1 20); do
         echo "TLS_NATIVE_ASAN_START attempt=${repeat}/20"
         timeout 180s python3 bench/profile_runner.py \
@@ -125,6 +134,10 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
           ./zig-out/bin/zig-mysql-high-ccu-tls-bench
         echo "TLS_DIRECT_BINARY_PASS attempt=${repeat}/20"
       done
+      if [[ "$tcp_asan_status" -ne 0 ]]; then
+        echo "ASan plaintext control also failed; TLS-specific attribution is invalid" >&2
+        exit 1
+      fi
     fi
   fi
   if [[ "$(uname -s)" == Linux ]]; then
