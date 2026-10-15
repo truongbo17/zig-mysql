@@ -1,0 +1,51 @@
+name: TLS native lifetime Memcheck (diagnostic)
+on:
+  push:
+    branches:
+      - diagnostic/tls-valgrind-native-lifetime
+  workflow_dispatch:
+
+jobs:
+  handshake-memcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        zig: ['0.16.0', '0.17.0']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ matrix.zig }}
+      - name: Install native memory checker
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y valgrind
+          valgrind --version
+      - name: Start disposable MySQL 8.4 verified TLS server
+        run: |
+          docker run -d --name zig-mysql-memcheck-db \
+            -e MYSQL_ROOT_PASSWORD=zig_mysql_test -e MYSQL_DATABASE=zigtest \
+            -p 127.0.0.1:33307:3306 mysql:8.4.11
+          ready=0
+          for i in $(seq 1 90); do
+            if docker logs zig-mysql-memcheck-db 2>&1 | grep -q 'MySQL init process done. Ready for start up.' && \
+               docker exec -e MYSQL_PWD=zig_mysql_test zig-mysql-memcheck-db mysql -uroot -N -e 'SELECT 1' >/dev/null 2>&1; then
+              ready=1; break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker cp zig-mysql-memcheck-db:/var/lib/mysql/ca.pem /tmp/zig-mysql-test-ca.pem
+      - name: Build native no-SQL TLS handshake reproducer
+        run: zig build -Doptimize=ReleaseFast
+      - name: Memcheck OpenSSL SSL_CTX / session lifetime, no pool and no SQL
+        run: |
+          echo "Valgrind + Zig cooperative stack switching may emit false positives; examine stacks before causal claims"
+          timeout 330s valgrind --tool=memcheck --error-exitcode=92 \
+            --leak-check=no --track-origins=yes --num-callers=32 \
+            ./zig-out/bin/zig-mysql-direct-tls-diagnostic
+      - name: Cleanup disposable MySQL
+        if: always()
+        run: docker rm -f zig-mysql-memcheck-db || true
