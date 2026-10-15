@@ -147,6 +147,7 @@ pub fn build(b: *std.Build) void {
         .name = "zig-mysql-direct-tls-diagnostic",
         .root_module = direct_tls_module,
     });
+    b.installArtifact(direct_tls_exe);
     const run_direct_tls = b.addRunArtifact(direct_tls_exe);
     run_direct_tls.has_side_effects = true;
     const direct_tls_step = b.step("tls-direct-bench", "Stress 32 direct TLS client sessions without Pool");
