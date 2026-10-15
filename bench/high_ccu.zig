@@ -118,7 +118,10 @@ fn scenario(allocator: std.mem.Allocator, io: std.Io, tls: bool, count: usize) !
 }
 
 pub fn run(allocator: std.mem.Allocator, io: std.Io, tls: bool) !void {
-    if (tls) { _ = signal(11, onFatal); _ = signal(6, onFatal); }
+    // DIAGNOSTIC (#65): the OS-level native SIGSEGV handler from #110
+    // would replace ASan's handler and obscure allocator stack traces.
+    // Leave signal handling to the LD_PRELOAD sanitizer in integration/run.sh.
+    // Do not merge this diagnostic experiment into production.
     for (worker_counts) |count| {
         try scenario(allocator, io, tls, count);
         if (tls) std.debug.print("TLS_SCENARIO_POOL_DEINIT_COMPLETE workers={d}\n", .{count});
