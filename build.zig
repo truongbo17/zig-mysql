@@ -5,7 +5,6 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const module = b.addModule("zig_mysql", .{
         .root_source_file = b.path("src/root.zig"),
-        .omit_frame_pointer = false,
         .unwind_tables = .async,
         .target = target,
         .optimize = optimize,
@@ -127,7 +126,6 @@ pub fn build(b: *std.Build) void {
 
     const ccu_tls_module = b.createModule(.{
         .root_source_file = b.path("bench/high_ccu_tls.zig"),
-        .omit_frame_pointer = false,
         .unwind_tables = .async,
         .target = target,
         .optimize = optimize,
