@@ -35,3 +35,14 @@ soak and independent HA/security approval (OPS #13).
 - [ ] Repeat on isolated representative staging hardware
 
 Do not close issue #31 or production epic #13 without the evidence above.
+
+## Safety gate added after intermittent heap corruption (#65)
+
+The RSS/FD profiler treats `double free or corruption`, glibc allocator
+corruption notices and SIGSEGV signatures in captured benchmark output as
+**fatal** even when the binary has a zero exit status. The exact-head
+Zig 0.16/0.17 matrix must go red on these signals. Earlier green runs
+containing such output do not count as clean stability evidence.
+
+This gate is diagnostic only: it does not fix TLS lifetime ownership,
+replace a debugger trace, or satisfy the 24-hour release policy (#13).
