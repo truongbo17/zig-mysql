@@ -106,10 +106,10 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
     docker cp "$name":/var/lib/mysql/ca.pem "$ca_file"
     zig build tls-integration
     if [[ "$(uname -s)" == Linux ]]; then
-      for repeat in 1 2 3; do
-        echo "TLS_CCU_REPEAT_START attempt=${repeat}/3"
-        timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast high-ccu-tls-bench
-        echo "TLS_CCU_REPEAT_PASS attempt=${repeat}/3"
+      for repeat in $(seq 1 10); do
+        echo "TLS_CCU_RELEASESAFE_START attempt=${repeat}/10"
+        timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseSafe high-ccu-tls-bench
+        echo "TLS_CCU_RELEASESAFE_PASS attempt=${repeat}/10"
       done
     fi
   fi
