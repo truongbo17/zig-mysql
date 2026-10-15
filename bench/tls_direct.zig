@@ -50,7 +50,7 @@ fn oneRound(io: std.Io) !void {
 }
 
 pub fn main(init: std.process.Init) !void {
-    // 128 rounds * 32 concurrent verified TLS handshakes, long enough for
+    // 24 rounds * 32 concurrent verified TLS handshakes under Valgrind, long enough for
     // live RSS/fd polling; detects failure that requires repeated sessions.
-    for (0..128) |_| try oneRound(init.io);
+    for (0..24) |_| try oneRound(init.io);
 }
