@@ -39,7 +39,7 @@ jobs:
           test "$ready" = 1
           docker cp zig-mysql-memcheck-db:/var/lib/mysql/ca.pem /tmp/zig-mysql-test-ca.pem
       - name: Build native no-SQL TLS handshake reproducer
-        run: zig build -Dtarget=x86_64-linux-gnu -Doptimize=ReleaseFast
+        run: zig build -Dcpu=baseline -Doptimize=ReleaseFast
       - name: Memcheck OpenSSL SSL_CTX / session lifetime, no pool and no SQL
         run: |
           echo "Valgrind + Zig cooperative stack switching may emit false positives; examine stacks before causal claims"
