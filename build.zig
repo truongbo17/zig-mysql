@@ -118,6 +118,8 @@ pub fn build(b: *std.Build) void {
         .name = "zig-mysql-high-ccu-bench",
         .root_module = ccu_module,
     });
+    // Diagnostic-only: install plaintext control for ASan/preload comparison.
+    b.installArtifact(ccu_exe);
     const run_ccu = b.addRunArtifact(ccu_exe);
     run_ccu.has_side_effects = true;
     const ccu_step = b.step("high-ccu-bench", "Run 1/8/32/64/128-CCU plaintext matrix");
