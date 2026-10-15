@@ -34,6 +34,7 @@ extern "crypto" fn X509_free(*X509) void;
 extern "ssl" fn SSL_read(*SSL, [*]u8, c_int) c_int;
 extern "ssl" fn SSL_write(*SSL, [*]const u8, c_int) c_int;
 extern "ssl" fn SSL_shutdown(*SSL) c_int;
+extern "crypto" fn ERR_clear_error() void;
 
 pub const Session = struct {
     ctx: *SSL_CTX,
@@ -72,6 +73,9 @@ pub const Session = struct {
         // SSL_CTRL_SET_TLSEXT_HOSTNAME = 55, TLSEXT_NAMETYPE_host_name = 0.
         if (SSL_ctrl(ssl, 55, 0, @ptrCast(host_z.ptr)) != 1) return error.TlsHostFailed;
         while (true) {
+            // SSL_get_error requires an empty thread-local OpenSSL error queue.
+            // A previous failed handshake may have run on this same Io worker.
+            ERR_clear_error();
             const n = SSL_connect(ssl);
             if (n == 1) break;
             switch (SSL_get_error(ssl, n)) {
@@ -95,6 +99,7 @@ pub const Session = struct {
         var used: usize = 0;
         while (used < destination.len) {
             const count: c_int = @intCast(@min(destination.len - used, std.math.maxInt(c_int)));
+            ERR_clear_error();
             const n = SSL_read(self.ssl, destination[used..].ptr, count);
             if (n <= 0) {
                 switch (SSL_get_error(self.ssl, n)) {
@@ -114,6 +119,7 @@ pub const Session = struct {
         var used: usize = 0;
         while (used < bytes.len) {
             const count: c_int = @intCast(@min(bytes.len - used, std.math.maxInt(c_int)));
+            ERR_clear_error();
             const n = SSL_write(self.ssl, bytes[used..].ptr, count);
             if (n <= 0) {
                 switch (SSL_get_error(self.ssl, n)) {
