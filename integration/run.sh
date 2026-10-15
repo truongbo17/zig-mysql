@@ -108,9 +108,21 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
     if [[ "$(uname -s)" == Linux ]]; then
       # Compile once; profile the actual benchmark process, not zig build.
       zig build -Doptimize=ReleaseFast
+      # DIAGNOSTIC ONLY (#65): intercept native OpenSSL malloc/free in the
+      # benchmark child process to obtain allocation/free stacks from ASan.
+      # Do not preload into Python or the rest of CI; never ship this path.
+      asan_lib="$(gcc -print-file-name=libasan.so)"
+      if [[ ! -f "$asan_lib" ]]; then
+        echo "ASan runtime is required for TLS heap-corruption diagnosis: $asan_lib" >&2
+        exit 1
+      fi
+      echo "TLS_NATIVE_ASAN_RUNTIME=$asan_lib"
       for repeat in $(seq 1 20); do
-        echo "TLS_DIRECT_BINARY_START attempt=${repeat}/20"
-        timeout 180s python3 bench/profile_runner.py ./zig-out/bin/zig-mysql-high-ccu-tls-bench
+        echo "TLS_NATIVE_ASAN_START attempt=${repeat}/20"
+        timeout 180s python3 bench/profile_runner.py \
+          env LD_PRELOAD="$asan_lib" \
+          ASAN_OPTIONS="detect_leaks=0:abort_on_error=1:malloc_context_size=40:fast_unwind_on_malloc=0:symbolize=1" \
+          ./zig-out/bin/zig-mysql-high-ccu-tls-bench
         echo "TLS_DIRECT_BINARY_PASS attempt=${repeat}/20"
       done
     fi
