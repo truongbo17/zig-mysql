@@ -1,0 +1,32 @@
+name: E3 Windows portability probe (informational)
+on:
+  push:
+    branches:
+      - feature/e3-ipv6-portability
+  workflow_dispatch:
+
+jobs:
+  windows-probe:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        zig: ['0.16.0', '0.17.0']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ matrix.zig }}
+      - name: Probe build and unit execution on native Windows
+        id: probe
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          zig version
+          zig build test
+      - name: Record result without claiming Windows support
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Output "E3_WINDOWS_PROBE_OUTCOME=${{ steps.probe.outcome }}"
+          Write-Output "Windows is unsupported until native TLS and socket CI are fully green; Linux CI remains gating."

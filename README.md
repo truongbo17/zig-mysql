@@ -929,3 +929,7 @@ MIT. See [LICENSE](LICENSE).
 ## Protocol fuzzing and large prepared payloads (Sprint E2, #33)
 
 Deterministic fixed-seed corpus tests cursor/handshake errors, hostile lengths and MySQL classic 24-bit packet-fragment boundaries. MySQL 8/9 and MariaDB 10/11 fixtures test prepared BLOB parameters and results larger than 16 MiB, comparing binary bytes exactly with 64 MiB disposable server packet limits. This proves selected framing paths, not production stability, high-CCU TLS safety or a completed security audit. See [Sprint E2 details](docs/SPRINT_E2_PROTOCOL.md); P0 TLS #65 and OPS production gate #13 remain unresolved.
+## Platform compatibility (Sprint E3, issue #34)
+
+Linux IPv6 loopback has an integration test through an AF_INET6 listener forwarding to the disposable MySQL IPv4 fixture. That is not evidence of an IPv6-enabled Docker host or remote server. Windows is **not supported** because the TLS backend still uses POSIX socket APIs; a native Windows compatibility probe is informational only. See [E3 platform matrix](docs/SPRINT_E3_PLATFORM.md). D3/D4 TLS heap blocker #65 and OPS production release gate #13 remain open.
+
