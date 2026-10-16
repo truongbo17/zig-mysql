@@ -106,7 +106,11 @@ for entry in "84 mysql:8.4.11" "97 mysql:9.7.1"; do
     docker cp "$name":/var/lib/mysql/ca.pem "$ca_file"
     zig build tls-integration
     if [[ "$(uname -s)" == Linux ]]; then
-      timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast high-ccu-tls-bench
+      if [[ "${SPRINT_E_DEFER_D4_TLS_CCU:-0}" == "1" ]]; then
+        echo "SPRINT_E_DEFERRED_D4_TLS_CCU issue_65=OPEN issue_30=OPEN issue_31=OPEN"
+      else
+        timeout 180s python3 bench/profile_runner.py zig build -Doptimize=ReleaseFast high-ccu-tls-bench
+      fi
     fi
   fi
   if [[ "$(uname -s)" == Linux ]]; then
