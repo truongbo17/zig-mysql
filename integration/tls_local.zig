@@ -1,5 +1,6 @@
 const std = @import("std");
 const mysql = @import("zig_mysql");
+const e1 = @import("e1_charset.zig");
 const e2 = @import("e2_large_prepared.zig");
 
 test "verified TLS to MySQL 8.4" {
@@ -111,4 +112,20 @@ test "E2 cross-server >16MiB prepared BLOB framing" {
     });
     defer conn.deinit(io);
     try e2.verify(&conn, io);
+}
+
+test "E1 utf8mb4 Unicode collation, SQL modes and prepared Vietnamese roundtrip" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33307") },
+        .username = "root",
+        .password = "zig_mysql_test",
+        .database = "zigtest",
+        .collation = .unicode_ci,
+        .tls = .{ .host = "MySQL_Server_8.4.11_Auto_Generated_Server_Certificate", .ca_file = "/tmp/zig-mysql-test-ca.pem" },
+    });
+    defer conn.deinit(io);
+    try e1.verify(&conn, io);
 }

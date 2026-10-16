@@ -42,7 +42,19 @@ pub const Config = struct {
     /// never cross borrower boundaries.
     statement_cache_capacity: usize = 0,
     connect_timeout: std.Io.Timeout = .none,
+    /// Collation ID sent in HandshakeResponse41. Only known UTF8MB4 IDs are
+    /// offered; nondefault values are verified after authentication.
+    collation: Utf8mb4Collation = .general_ci,
     tls: ?TlsConfig = null,
+};
+
+/// Well-known classic-protocol UTF8MB4 collation IDs shared with MySQL.
+/// mysql_0900_ai_ci is MySQL 8+/9-specific, not a MariaDB guarantee.
+pub const Utf8mb4Collation = enum(u8) {
+    general_ci = 45,
+    bin = 46,
+    unicode_ci = 224,
+    mysql_0900_ai_ci = 255,
 };
 
 pub const TlsConfig = struct {
@@ -463,7 +475,7 @@ pub const Client = struct {
         defer response.deinit(allocator);
         try appendInt(&response, allocator, flags, 4);
         try appendInt(&response, allocator, @min(config.max_message_size, std.math.maxInt(u32)), 4);
-        try response.append(allocator, 45); // utf8mb4_general_ci
+        try response.append(allocator, @intFromEnum(config.collation)); // HandshakeResponse41 charset/collation
         try response.appendNTimes(allocator, 0, 23);
         if (config.tls) |tls_config| {
             try self.wire.write(io, response.items); // SSLRequest, sequence 1
@@ -475,6 +487,24 @@ pub const Client = struct {
         try appendNul(&response, allocator, hello.plugin);
         try self.wire.write(io, response.items);
         try self.finishAuthentication(io, config.password, hello.plugin, &hello.seed, config.address == .unix or config.tls != null);
+        // A server may ignore or remap an unsupported collation ID.
+        // For nondefault opt-in choices, verify the actual session value
+        // before returning the connection; never silently use another mode.
+        if (config.collation != .general_ci) {
+            const expected: []const u8 = switch (config.collation) {
+                .general_ci => unreachable,
+                .bin => "utf8mb4_bin",
+                .unicode_ci => "utf8mb4_unicode_ci",
+                .mysql_0900_ai_ci => "utf8mb4_0900_ai_ci",
+            };
+            var actual = try self.query(io, "SELECT @@collation_connection");
+            defer actual.deinit();
+            if (actual.value != .rows or actual.value.rows.items.len != 1 or
+                actual.value.rows.items[0].values.len != 1)
+                return error.CollationMismatch;
+            const name = actual.value.rows.items[0].values[0] orelse return error.CollationMismatch;
+            if (!std.mem.eql(u8, expected, name)) return error.CollationMismatch;
+        }
         return self;
     }
 

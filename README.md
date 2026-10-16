@@ -45,6 +45,12 @@ Compatibility is established by a real server test, rather than inferred from a 
 
 Unencrypted TCP does **not** send a cleartext password for full SHA2 authentication. Such a server request returns `error.SecureTransportRequired`. `LOCAL INFILE` is disabled. TLS uses nonblocking OpenSSL sockets with cancelable `std.Io` waits (`SSL_ERROR_WANT_READ`/`WANT_WRITE`); currently Linux/macOS only, with 1 ms retry granularity. This is not yet event-loop-native TLS readiness polling.
 
+## Sprint E — Compatibility in progress
+
+Sprint D is temporarily deferred: D1 #28 and D2 #29 are merged, while D3 #30 / D4 #31 remain blocked by TLS heap-corruption issue #65. The 24-hour soak / release epic #13 remains OPEN, so **Sprint E completion will not mean production certification**. Track E1 #32, E2 #33, E3 #34 and acceptance evidence in [Sprint E status](docs/SPRINT_E_STATUS.md).
+
+The optional `Config.collation` field selects a typed UTF8MB4 collation at the MySQL HandshakeResponse41 stage; the default remains `.general_ci` (ID 45). Other opt-in options are `.bin` (46), `.unicode_ci` (224), and `.mysql_0900_ai_ci` (255, MySQL-specific). Nondefault collation choices are checked against `@@collation_connection` after authentication; an unsupported/remapped value fails closed with `error.CollationMismatch` (or the server's error). Choose a server-supported value. SQL modes and session time zones are server session state, and should be applied explicitly by the application using constant, trusted SQL; never build SQL by concatenating user input. Use bound prepared parameters under `ANSI_QUOTES` / `NO_BACKSLASH_ESCAPES`.
+
 ## Requirements
 
 - Zig 0.16.0 or 0.17.0.
