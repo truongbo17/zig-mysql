@@ -164,16 +164,16 @@ test "E2 deterministic malformed length / header / handshake corpus is panic-fre
         const input = corpus[0..len];
         var cursor = Cursor{ .bytes = input };
         switch (round % 6) {
-            0 => { _ = cursor.lenInt() catch {}; },
-            1 => { _ = cursor.lenString() catch {}; },
-            2 => { _ = cursor.nulString() catch {}; },
-            3 => { _ = cursor.uint(8) catch {}; },
-            4 => { _ = cursor.take(round % 128) catch {}; },
-            else => { _ = cursor.byte() catch {}; },
+            0 => { if (cursor.lenInt()) |_| {} else |_| {} },
+            1 => { if (cursor.lenString()) |_| {} else |_| {} },
+            2 => { if (cursor.nulString()) |_| {} else |_| {} },
+            3 => { if (cursor.uint(8)) |_| {} else |_| {} },
+            4 => { if (cursor.take(round % 128)) |_| {} else |_| {} },
+            else => { if (cursor.byte()) |_| {} else |_| {} },
         }
         try std.testing.expect(cursor.pos <= input.len);
-        _ = Header.parse(input) catch {};
-        _ = Handshake.parse(input) catch {};
+        if (Header.parse(input)) |_| {} else |_| {}
+        if (Handshake.parse(input)) |_| {} else |_| {}
     }
 }
 
