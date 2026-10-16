@@ -45,9 +45,9 @@ Compatibility is established by a real server test, rather than inferred from a 
 
 Unencrypted TCP does **not** send a cleartext password for full SHA2 authentication. Such a server request returns `error.SecureTransportRequired`. `LOCAL INFILE` is disabled. TLS uses nonblocking OpenSSL sockets with cancelable `std.Io` waits (`SSL_ERROR_WANT_READ`/`WANT_WRITE`); currently Linux/macOS only, with 1 ms retry granularity. This is not yet event-loop-native TLS readiness polling.
 
-## Sprint E — Compatibility in progress
+## Sprint E — Compatibility delivered (2026-10-16)
 
-Sprint D is temporarily deferred: D1 #28 and D2 #29 are merged, while D3 #30 / D4 #31 remain blocked by TLS heap-corruption issue #65. The 24-hour soak / release epic #13 remains OPEN, so **Sprint E completion will not mean production certification**. Track E1 #32, E2 #33, E3 #34 and acceptance evidence in [Sprint E status](docs/SPRINT_E_STATUS.md).
+Sprint E is **complete as an independent compatibility milestone**: E1 #32 ([PR #120](https://github.com/truongbo17/zig-mysql/pull/120)), E2 #33 ([PR #121](https://github.com/truongbo17/zig-mysql/pull/121)), and E3 #34 ([PR #122](https://github.com/truongbo17/zig-mysql/pull/122)) are merged and closed. Exact-head acceptance uses Zig 0.16/0.17 on real MySQL/MariaDB and functional TLS; E3 is an **evaluation** and does not certify Windows. Sprint D3 #30 and D4 #31 remain deferred and **blocked by native TLS heap-corruption #65**. Production epic #13 remains OPEN. See [Sprint E acceptance report](docs/SPRINT_E_STATUS.md).
 
 The optional `Config.collation` field selects a typed UTF8MB4 collation at the MySQL HandshakeResponse41 stage; the default remains `.general_ci` (ID 45). Other opt-in options are `.bin` (46), `.unicode_ci` (224), and `.mysql_0900_ai_ci` (255, MySQL-specific). Nondefault collation choices are checked against `@@collation_connection` after authentication; an unsupported/remapped value fails closed with `error.CollationMismatch` (or the server's error). Choose a server-supported value. SQL modes and session time zones are server session state, and should be applied explicitly by the application using constant, trusted SQL; never build SQL by concatenating user input. Use bound prepared parameters under `ANSI_QUOTES` / `NO_BACKSLASH_ESCAPES`.
 
@@ -866,18 +866,18 @@ path on the GitHub runner; do not use these values as production SLAs.
 
 | Order | Small issue | Dependency | Status |
 | --- | --- | --- | --- |
-| D1 | [#28 Per-command metrics and latency hooks](https://github.com/truongbo17/zig-mysql/issues/28) | Existing Pool Stats | In review ([PR #60](https://github.com/truongbo17/zig-mysql/pull/60)); not complete |
-| D2 | [#29 Safe batch prepared execute/bulk insert](https://github.com/truongbo17/zig-mysql/issues/29) | Sprint A prepared types | Implemented, CI review ([PR #61](https://github.com/truongbo17/zig-mysql/pull/61)) |
-| D3 | [#30 Native TLS readiness waits](https://github.com/truongbo17/zig-mysql/issues/30) | Cancellation safety | Planned |
-| D4 | [#31 1–128 worker TLS/CCU benchmarks](https://github.com/truongbo17/zig-mysql/issues/31) | #28, #30 | Benchmark CI PASS; acceptance pending ([PR #63](https://github.com/truongbo17/zig-mysql/pull/63)) |
+| D1 | [#28 Per-command metrics and latency hooks](https://github.com/truongbo17/zig-mysql/issues/28) | Existing Pool Stats | DONE — [PR #60](https://github.com/truongbo17/zig-mysql/pull/60) merged, issue closed |
+| D2 | [#29 Safe batch prepared execute/bulk insert](https://github.com/truongbo17/zig-mysql/issues/29) | Sprint A prepared types | DONE — [PR #61](https://github.com/truongbo17/zig-mysql/pull/61), [#106](https://github.com/truongbo17/zig-mysql/pull/106) merged, issue closed |
+| D3 | [#30 Native TLS readiness waits](https://github.com/truongbo17/zig-mysql/issues/30) | Cancellation safety | DEFERRED / BLOCKED by [#65](https://github.com/truongbo17/zig-mysql/issues/65), do not ship diagnostic timeout bypasses |
+| D4 | [#31 1–128 worker TLS/CCU benchmarks](https://github.com/truongbo17/zig-mysql/issues/31) | #28, #30 | DEFERRED / BLOCKED by [#65](https://github.com/truongbo17/zig-mysql/issues/65); profiler [PR #115](https://github.com/truongbo17/zig-mysql/pull/115) merged, full CCU NOT accepted |
 
 ### Sprint E — Compatibility and protocol robustness (P3)
 
 | Order | Small issue | Dependency | Status |
 | --- | --- | --- | --- |
-| E1 | [#32 Charset, collation and SQL-mode matrix](https://github.com/truongbo17/zig-mysql/issues/32) | Sprint A | Planned |
-| E2 | [#33 Protocol fuzzing and >16 MiB prepared payloads](https://github.com/truongbo17/zig-mysql/issues/33) | Protocol/test fixtures | Planned |
-| E3 | [#34 IPv6 and Windows portability evaluation](https://github.com/truongbo17/zig-mysql/issues/34) | Platform CI | Planned |
+| E1 | [#32 Charset, collation and SQL-mode matrix](https://github.com/truongbo17/zig-mysql/issues/32) | Sprint A | DONE — [PR #120](https://github.com/truongbo17/zig-mysql/pull/120), [CI #38831694065](https://github.com/truongbo17/zig-mysql/actions/runs/38831694065), issue closed |
+| E2 | [#33 Protocol fuzzing and >16 MiB prepared payloads](https://github.com/truongbo17/zig-mysql/issues/33) | Protocol/test fixtures | DONE — [PR #121](https://github.com/truongbo17/zig-mysql/pull/121), [CI #38830961959](https://github.com/truongbo17/zig-mysql/actions/runs/38830961959), issue closed |
+| E3 | [#34 IPv6 and Windows portability evaluation](https://github.com/truongbo17/zig-mysql/issues/34) | Platform CI | DONE (evaluation) — [PR #122](https://github.com/truongbo17/zig-mysql/pull/122), [CI #38832510637](https://github.com/truongbo17/zig-mysql/actions/runs/38832510637); Windows unsupported, issue closed |
 
 ### Parallel production acceptance — NOT yet passed
 
