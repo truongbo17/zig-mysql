@@ -1,0 +1,38 @@
+name: Sprint E compatibility acceptance (D4 explicitly deferred)
+on:
+  push:
+    branches:
+      - 'feature/e1-*'
+      - 'feature/e2-*'
+      - 'feature/e3-*'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: sprint-e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        zig: ['0.16.0', '0.17.0']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ matrix.zig }}
+      - run: python3 -m unittest discover -s integration -p 'test_*.py'
+      - run: zig build test
+      - name: MySQL 8/9 + MariaDB 10/11 + verified-TLS integration (D4 high-CCU excluded)
+        env:
+          SPRINT_E_DEFER_D4_TLS_CCU: "1"
+        run: bash integration/run.sh
+      - name: Do not confuse Sprint E acceptance with a release certificate
+        if: always()
+        run: |
+          echo 'Sprint E: independent compatibility integration evidence only.'
+          echo 'D3/D4 P0 native TLS heap corruption #65 remains a release blocker.'
+          echo 'Full D4 high-CCU, 24h soak, HA/security gate #13 remain required.'
