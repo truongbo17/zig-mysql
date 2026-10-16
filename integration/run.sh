@@ -122,7 +122,7 @@ timeout 300s bash integration/replication_run.sh
 # Independently validate the classic protocol against supported MariaDB
 # families. Use the upstream MariaDB image's own initialization variables.
 for mariadb_tag in "10.11" "11.4"; do
-  docker run --name "$mariadb_container"     -e MARIADB_ROOT_PASSWORD=zig_mysql_test     -e MARIADB_DATABASE=zigtest     -e MARIADB_USER=zigtest     -e MARIADB_PASSWORD=zig_mysql_test     -p 127.0.0.1:33308:3306 -d "mariadb:$mariadb_tag" >/dev/null
+  docker run --name "$mariadb_container"     -e MARIADB_ROOT_PASSWORD=zig_mysql_test     -e MARIADB_DATABASE=zigtest     -e MARIADB_USER=zigtest     -e MARIADB_PASSWORD=zig_mysql_test     -p 127.0.0.1:33308:3306 -d "mariadb:$mariadb_tag" --max-allowed-packet=64M >/dev/null
 
   ready=0
   for _ in $(seq 1 90); do
