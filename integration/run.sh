@@ -11,13 +11,16 @@ binary="$(mktemp -t zig-mysql-socket-test.XXXXXX)"
 socket_dir=/tmp/zig-mysql-test-socket
 ca_file=/tmp/zig-mysql-test-ca.pem
 stall_pid=""
+ipv6_pid=""
 soak_report="/tmp/zig-mysql-soak-${prefix}.json"
 cleanup() {
   if [[ -n "$stall_pid" ]]; then kill "$stall_pid" >/dev/null 2>&1 || true; fi
+  if [[ -n "$ipv6_pid" ]]; then kill "$ipv6_pid" >/dev/null 2>&1 || true; fi
   docker rm -f "$container80" "$container84" "$container97" "$mariadb_container" >/dev/null 2>&1 || true
   rm -f "$binary"
   rm -f "$ca_file" "$soak_report"
   rm -f "/tmp/zig-mysql-stall-$prefix.log"
+  rm -f "/tmp/zig-mysql-ipv6-$prefix.log"
   rmdir "$socket_dir" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -38,6 +41,13 @@ wait_mysql() {
 docker run --name "$container80" -e MYSQL_ROOT_PASSWORD=zig_mysql_test \
   -e MYSQL_DATABASE=zigtest -p 127.0.0.1:33306:3306 -d mysql:8.0.46 >/dev/null
 wait_mysql "$container80"
+python3 -u integration/ipv6_proxy.py > "/tmp/zig-mysql-ipv6-$prefix.log" 2>&1 &
+ipv6_pid="$!"
+sleep 0.5
+if ! kill -0 "$ipv6_pid" 2>/dev/null; then
+  cat "/tmp/zig-mysql-ipv6-$prefix.log" >&2
+  exit 1
+fi
 docker exec -e MYSQL_PWD=zig_mysql_test "$container80" mysql -uroot -e \
   "CREATE USER 'zigtest'@'%' IDENTIFIED WITH mysql_native_password BY 'zig_mysql_test'; GRANT ALL ON zigtest.* TO 'zigtest'@'%';"
 zig build integration
