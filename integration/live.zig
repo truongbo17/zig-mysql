@@ -75,6 +75,24 @@ test "MySQL 8.0 text query and result rows" {
     try client.ping(io);
 }
 
+test "E3 IPv6 loopback MySQL TCP and prepared SQL roundtrip" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var client = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("[::1]:33311") },
+        .username = "zigtest", .password = "zig_mysql_test", .database = "zigtest",
+    });
+    defer client.deinit(io);
+    try client.ping(io);
+    var statement = try client.prepare(io, "SELECT ?");
+    defer client.closeStatement(io, &statement) catch {};
+    var result = try client.execute(io, statement, &.{.{ .text = "IPv6 ổn định" }});
+    defer result.deinit();
+    try std.testing.expectEqualStrings("IPv6 ổn định", result.value.rows.items[0].values[0].?);
+}
+
+
 test "connection pool caps capacity and resets sessions between borrowers" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer threaded.deinit();
