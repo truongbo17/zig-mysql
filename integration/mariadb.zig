@@ -1,5 +1,6 @@
 const std = @import("std");
 const mysql = @import("zig_mysql");
+const e2 = @import("e2_large_prepared.zig");
 
 test "MariaDB native auth, prepared parameters, transactions and pooled reset" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
@@ -790,4 +791,16 @@ test "MariaDB bounded prepared batch preflight and transactional partial failure
     var final = try conn.query(io, "SELECT COUNT(*) FROM zig_batch_fixture");
     try std.testing.expectEqualStrings("0", final.value.rows.items[0].values[0].?);
     final.deinit();
+}
+
+test "E2 prepared binary >16MiB MariaDB roundtrip" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33308") },
+        .username = "zigtest", .password = "zig_mysql_test", .database = "zigtest",
+    });
+    defer conn.deinit(io);
+    try e2.verify(&conn, io);
 }

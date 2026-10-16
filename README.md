@@ -918,3 +918,8 @@ measurements in GitHub Actions logs (not fixed performance guarantees).
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+
+## Protocol fuzzing and large prepared payloads (Sprint E2, #33)
+
+Deterministic fixed-seed corpus tests cursor/handshake errors, hostile lengths and MySQL classic 24-bit packet-fragment boundaries. MySQL 8/9 and MariaDB 10/11 fixtures test prepared BLOB parameters and results larger than 16 MiB, comparing binary bytes exactly with 64 MiB disposable server packet limits. This proves selected framing paths, not production stability, high-CCU TLS safety or a completed security audit. See [Sprint E2 details](docs/SPRINT_E2_PROTOCOL.md); P0 TLS #65 and OPS production gate #13 remain unresolved.

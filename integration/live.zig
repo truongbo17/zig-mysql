@@ -1,5 +1,6 @@
 const std = @import("std");
 const mysql = @import("zig_mysql");
+const e2 = @import("e2_large_prepared.zig");
 
 test "MySQL 8.0 text query and result rows" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
@@ -1400,4 +1401,18 @@ test "batch respects connection wire payload limit before any write" {
     var check = try conn.query(io, "SELECT COUNT(*) FROM zig_batch_wire_cap");
     defer check.deinit();
     try std.testing.expectEqualStrings("0", check.value.rows.items[0].values[0].?);
+}
+
+test "E2 prepared binary payload greater than 16MiB across classic packet boundaries" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33306") },
+        .username = "zigtest",
+        .password = "zig_mysql_test",
+        .database = "zigtest",
+    });
+    defer conn.deinit(io);
+    try e2.verify(&conn, io);
 }

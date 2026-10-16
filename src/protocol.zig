@@ -147,3 +147,62 @@ test "cursor corrupted offset and truncated length-encoded payload" {
     var partial = Cursor{ .bytes = &.{ 0xfe, 1, 2, 3 } };
     try std.testing.expectError(error.Truncated, partial.lenInt());
 }
+
+
+test "E2 deterministic malformed length / header / handshake corpus is panic-free" {
+    // Fixed-seed randomized corpus: cross-version reproducible, no network,
+    // no unbounded allocations. A malformed header/cursor may return an
+    // explicit error but must never index out of bounds or wrap offsets.
+    var seed: u64 = 0x9e3779b97f4a7c15;
+    var corpus: [96]u8 = undefined;
+    for (0..4096) |round| {
+        for (&corpus) |*b| {
+            seed = seed *% 6364136223846793005 +% 1442695040888963407;
+            b.* = @truncate(seed >> 56);
+        }
+        const len = round % (corpus.len + 1);
+        const input = corpus[0..len];
+        var cursor = Cursor{ .bytes = input };
+        switch (round % 6) {
+            0 => { if (cursor.lenInt()) |_| {} else |_| {} },
+            1 => { if (cursor.lenString()) |_| {} else |_| {} },
+            2 => { if (cursor.nulString()) |_| {} else |_| {} },
+            3 => { if (cursor.uint(8)) |_| {} else |_| {} },
+            4 => { if (cursor.take(round % 128)) |_| {} else |_| {} },
+            else => { if (cursor.byte()) |_| {} else |_| {} },
+        }
+        try std.testing.expect(cursor.pos <= input.len);
+        if (Header.parse(input)) |_| {} else |_| {}
+        if (Handshake.parse(input)) |_| {} else |_| {}
+    }
+}
+
+test "E2 hostile 64-bit length cannot cause a cursor overflow" {
+    const giant = [_]u8{ 0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
+    var c = Cursor{ .bytes = &giant };
+    try std.testing.expectError(error.Truncated, c.lenString());
+    try std.testing.expect(c.pos <= giant.len);
+    var invalid = Cursor{ .bytes = &giant, .pos = std.math.maxInt(usize) };
+    try std.testing.expectError(error.Truncated, invalid.take(1));
+    try std.testing.expectError(error.Truncated, invalid.nulString());
+    try std.testing.expectError(error.Truncated, invalid.lenInt());
+}
+
+test "E2 packet payload fragmentation includes exact 16 MiB boundaries" {
+    const lengths = [_]usize{ 0, 1, max_packet_payload - 1,
+        max_packet_payload, max_packet_payload + 1,
+        2 * max_packet_payload, 2 * max_packet_payload + 37 };
+    for (lengths) |length| {
+        var left = length;
+        var fragments: usize = 0;
+        while (true) {
+            const n = @min(left, max_packet_payload);
+            const h = Header{ .length = n, .sequence = @truncate(fragments) };
+            try std.testing.expectEqualDeep(h, try Header.parse(&h.encode()));
+            left -= n;
+            fragments += 1;
+            if (n < max_packet_payload) break;
+        }
+        try std.testing.expectEqual(length / max_packet_payload + 1, fragments);
+    }
+}

@@ -1,5 +1,6 @@
 const std = @import("std");
 const mysql = @import("zig_mysql");
+const e2 = @import("e2_large_prepared.zig");
 
 test "MySQL 8.4 or 9.x caching SHA2 over Unix socket" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
@@ -23,4 +24,16 @@ test "MySQL 8.4 or 9.x caching SHA2 over Unix socket" {
     var bound = try client.execute(io, statement, &.{.{ .int = 42 }});
     defer bound.deinit();
     try std.testing.expectEqualStrings("42", bound.value.rows.items[0].values[0].?);
+}
+
+test "E2 cross-server >16MiB prepared BLOB framing" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .unix = try std.Io.net.UnixAddress.init("/tmp/zig-mysql-test-socket/mysqld.sock") },
+        .username = "root", .password = "zig_mysql_test", .database = "zigtest",
+    });
+    defer conn.deinit(io);
+    try e2.verify(&conn, io);
 }

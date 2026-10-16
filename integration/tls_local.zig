@@ -1,5 +1,6 @@
 const std = @import("std");
 const mysql = @import("zig_mysql");
+const e2 = @import("e2_large_prepared.zig");
 
 test "verified TLS to MySQL 8.4" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
@@ -98,4 +99,16 @@ test "TLS failed certificate verification never poisons a later valid session on
     var result = try conn.queryWithTimeout(io, "SELECT 1", .fromSeconds(2));
     defer result.deinit();
     try std.testing.expectEqualStrings("1", result.value.rows.items[0].values[0].?);
+}
+
+test "E2 cross-server >16MiB prepared BLOB framing" {
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33307") },
+        .username = "root", .password = "zig_mysql_test", .database = "zigtest", .tls = .{ .host = "MySQL_Server_8.4.11_Auto_Generated_Server_Certificate", .ca_file = "/tmp/zig-mysql-test-ca.pem" },
+    });
+    defer conn.deinit(io);
+    try e2.verify(&conn, io);
 }
