@@ -88,6 +88,37 @@ class RoadmapCoverageTests(unittest.TestCase):
         self.assertIn("24-hour", report)
         self.assertIn("OPS #13", report)
 
+    def test_sprint_e_all_issues_delivered_without_waiving_tls_or_ops(self):
+        readme = (REPO / "README.md").read_text()
+        section = readme.split("### Sprint E —", 1)[1].split(
+            "### Parallel production acceptance", 1
+        )[0]
+        for item, issue, pr in ((1, 32, 120), (2, 33, 121), (3, 34, 122)):
+            rows = [
+                line for line in section.splitlines()
+                if line.startswith(f"| E{item} |")
+                and f"/issues/{issue})" in line
+            ]
+            self.assertEqual(len(rows), 1, f"missing delivered Sprint E{item}")
+            self.assertIn("DONE", rows[0])
+            self.assertIn(f"/pull/{pr}", rows[0])
+            self.assertIn("/actions/runs/", rows[0])
+            self.assertNotIn("Planned", rows[0])
+        d_section = readme.split("### Sprint D —", 1)[1].split("### Sprint E —", 1)[0]
+        for item in (3, 4):
+            rows = [line for line in d_section.splitlines() if line.startswith(f"| D{item} |")]
+            self.assertEqual(1, len(rows))
+            self.assertIn("BLOCKED", rows[0])
+            self.assertIn("/issues/65", rows[0])
+        roadmap = (REPO / "docs/FEATURE_ROADMAP.md").read_text()
+        self.assertIn("**Sprint E complete", roadmap)
+        report = (REPO / "docs/SPRINT_E_STATUS.md").read_text()
+        self.assertIn("3 of 3 issues closed", report)
+        self.assertIn("not", report.lower())
+        self.assertIn("Windows", report)
+        self.assertIn("production", report.lower())
+        self.assertIn("38832510637", report)
+
     def test_plan_and_gate_are_explicit(self):
         readme = (REPO / "README.md").read_text()
         self.assertIn("## Feature plan and issue tracker", readme)
