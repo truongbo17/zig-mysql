@@ -15,7 +15,9 @@ pub fn main(init: std.process.Init) !void {
     else
         .init;
     defer {
+        std.debug.print("D3_CHECKED_ALLOCATOR_DEINIT_BEGIN\n", .{});
         const result = checked.deinit();
+        std.debug.print("D3_CHECKED_ALLOCATOR_DEINIT_END\n", .{});
         if (comptime is_safe_v17) {
             if (result != 0) @panic("D3_CHECKED_ALLOCATOR_LEAK");
         } else {
@@ -25,5 +27,5 @@ pub fn main(init: std.process.Init) !void {
     // Run the real, fully bounded 1/8/32/64/128-worker pool, including
     // acquireWithTimeout and queryWithTimeout, verified TLS CA and host.
     try @import("high_ccu.zig").run(checked.allocator(), init.io, true);
-    std.debug.print("D3_CHECKED_ALLOCATOR_COMPLETE\n", .{});
+    std.debug.print("D3_CHECKED_WORKLOAD_COMPLETE\n", .{});
 }
