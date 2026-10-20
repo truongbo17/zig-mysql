@@ -39,6 +39,24 @@ jobs:
           done
           test "$ready" = 1
           docker cp d3-checked-mysql:/var/lib/mysql/ca.pem /tmp/zig-mysql-test-ca.pem
+      - name: Start disposable MySQL 8.0 plaintext negative-control fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name d3-checked-plain \
+            -e MYSQL_ROOT_PASSWORD=zig_mysql_test -e MYSQL_DATABASE=zigtest \
+            -p 127.0.0.1:33306:3306 mysql:8.0.46
+          ready=0
+          for n in $(seq 1 90); do
+            if docker logs d3-checked-plain 2>&1 | grep -q 'MySQL init process done. Ready for start up.' && \
+               docker exec -e MYSQL_PWD=zig_mysql_test d3-checked-plain mysql -uroot -N -e 'SELECT 1' >/dev/null 2>&1; then
+              ready=1; break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker exec -e MYSQL_PWD=zig_mysql_test d3-checked-plain mysql -uroot -e \
+            "CREATE USER 'zigtest'@'%' IDENTIFIED WITH mysql_native_password BY 'zig_mysql_test'; GRANT ALL ON zigtest.* TO 'zigtest'@'%';"
       - name: Compile fully bounded TLS stress with version-native checked allocator
         run: zig build -Doptimize=ReleaseSafe
       - name: Run 12 independent 128-worker TLS CCU matrices with strict corruption detection
@@ -47,14 +65,25 @@ jobs:
           set -euo pipefail
           export MALLOC_CHECK_=3
           export GLIBC_TUNABLES=glibc.malloc.check=3
+          plain_failed=0
+          for n in $(seq 1 6); do
+            echo "D3_CHECKED_PLAIN_START zig=${{ matrix.zig }} repeat=$n"
+            if ! timeout 180s python3 bench/profile_runner.py ./zig-out/bin/zig-mysql-high-ccu-plain-checked; then
+              echo "D3_CHECKED_PLAIN_CONTROL_FAILURE invalidates TLS-specific attribution" >&2
+              plain_failed=1
+              break
+            fi
+            echo "D3_CHECKED_PLAIN_PASS zig=${{ matrix.zig }} repeat=$n"
+          done
           for n in $(seq 1 12); do
             echo "D3_CHECKED_TLS_START zig=${{ matrix.zig }} repeat=$n"
             timeout 180s python3 bench/profile_runner.py ./zig-out/bin/zig-mysql-high-ccu-tls-checked
             echo "D3_CHECKED_TLS_PASS zig=${{ matrix.zig }} repeat=$n"
           done
+          if [[ "$plain_failed" != 0 ]]; then echo "Plain control also failed" >&2; exit 1; fi
       - name: Cleanup MySQL and test CA
         if: always()
         shell: bash
         run: |
-          docker rm -f d3-checked-mysql || true
+          docker rm -f d3-checked-mysql d3-checked-plain || true
           rm -f /tmp/zig-mysql-test-ca.pem
