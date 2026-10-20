@@ -12,7 +12,7 @@ permissions:
 jobs:
   checked-tls:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 65
     strategy:
       fail-fast: false
       matrix:
@@ -75,12 +75,23 @@ jobs:
             fi
             echo "D3_CHECKED_PLAIN_PASS zig=${{ matrix.zig }} repeat=$n"
           done
-          for n in $(seq 1 12); do
+          for n in $(seq 1 40); do
             echo "D3_CHECKED_TLS_START zig=${{ matrix.zig }} repeat=$n"
             timeout 180s python3 bench/profile_runner.py ./zig-out/bin/zig-mysql-high-ccu-tls-checked
             echo "D3_CHECKED_TLS_PASS zig=${{ matrix.zig }} repeat=$n"
           done
           if [[ "$plain_failed" != 0 ]]; then echo "Plain control also failed" >&2; exit 1; fi
+      - name: Compare optimized ReleaseFast with identical checked allocator and 40 TLS processes
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build -Doptimize=ReleaseFast
+          export MALLOC_CHECK_=3
+          for n in $(seq 1 40); do
+            echo "D3_CHECKED_FAST_START zig=${{ matrix.zig }} repeat=$n"
+            timeout 180s python3 bench/profile_runner.py ./zig-out/bin/zig-mysql-high-ccu-tls-checked
+            echo "D3_CHECKED_FAST_PASS zig=${{ matrix.zig }} repeat=$n"
+          done
       - name: Cleanup MySQL and test CA
         if: always()
         shell: bash
