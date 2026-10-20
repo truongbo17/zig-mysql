@@ -242,3 +242,65 @@ jobs:
         run: |
           docker rm -f d3-cleanup-mysql || true
           rm -f /tmp/zig-mysql-test-ca.pem
+
+
+  gdb-native-backtrace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: '0.16.0'
+      - name: Install native debugger and glibc symbols
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y gdb libc6-dbg
+      - name: Start MySQL 8.4 for native process-exit debugger
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name d3-gdb-mysql \
+            -e MYSQL_ROOT_PASSWORD=zig_mysql_test -e MYSQL_DATABASE=zigtest \
+            -p 127.0.0.1:33307:3306 mysql:8.4.11
+          ready=0
+          for n in $(seq 1 90); do
+            if docker logs d3-gdb-mysql 2>&1 | grep -q 'MySQL init process done. Ready for start up.' && \
+               docker exec -e MYSQL_PWD=zig_mysql_test d3-gdb-mysql mysql -uroot -N -e 'SELECT 1' >/dev/null 2>&1; then
+              ready=1; break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker cp d3-gdb-mysql:/var/lib/mysql/ca.pem /tmp/zig-mysql-test-ca.pem
+      - name: Build checked native TLS for symbolic backtrace
+        run: zig build -Doptimize=ReleaseSafe
+      - name: GDB until SIGSEGV/abort or 18 complete verified-TLS 128-CCU runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(mktemp)"
+          trap 'rm -f "$output"' EXIT
+          for n in $(seq 1 18); do
+            echo "D3_GDB_START repeat=$n"
+            set +e
+            timeout 180s gdb -q -batch -return-child-result \
+              -ex 'set debuginfod enabled off' \
+              -ex 'set pagination off' \
+              -ex 'handle SIGPIPE nostop noprint pass' \
+              -ex run -ex 'thread apply all bt 30' \
+              --args ./zig-out/bin/zig-mysql-high-ccu-tls-minimal-checked > "$output" 2>&1
+            status=$?
+            set -e
+            if [[ "$status" != 0 ]] || grep -E -q 'Program received signal SIG(SEGV|ABRT)|double free or corruption|free\(\): invalid' "$output"; then
+              echo "D3_GDB_CRASH_TRACE code=$status repeat=$n"
+              tail -n 160 "$output"
+              exit 1
+            fi
+            echo "D3_GDB_PASS repeat=$n"
+          done
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f d3-gdb-mysql || true
+          rm -f /tmp/zig-mysql-test-ca.pem
