@@ -102,6 +102,40 @@ and SQL operations in the JSON. The versioned policy requires at least
 integrity check, *not* a realistic throughput or query-payload SLO.
 Configure stronger load and realistic query shapes before commercial release.
 
+
+## 2b. Paired Zig 0.16/0.17 artifact audit (prepared; NOT executed)
+
+Once OPS1 has configured an isolated staging runner, execute the manual
+`Staging 24h Soak` workflow on **the same frozen main SHA**, once for
+Zig 0.16 and independently for Zig 0.17. Each job must complete the
+uninterrupted >=86,400-second test and produce its official artifact.
+Both must have independently successful GitHub Actions run results.
+
+The manual [paired evidence audit](../.github/workflows/soak-evidence-audit.yml)
+takes exactly three inputs: the frozen 40-character reviewed SHA, the
+Zig0.16 soak run ID, and the Zig0.17 soak run ID. It is NOT a release or
+deployment workflow. It rejects two identical run IDs, non-main refs, missing
+`production-validation` environment classification, an input SHA differing
+from the workflow dispatch SHA, unsuccessful or untrusted runs, another
+workflow name/path, missing/expired artifact or GitHub artifact SHA256
+metadata, mismatched artifact IDs/SHAs/Zig versions and 24-hour policy
+violations. It downloads the JSON directly from GitHub Actions with the
+workflow token; it does not accept arbitrary manually uploaded evidence.
+Negative fixtures are tested by `integration/test_soak_provenance.py`.
+
+**Limitations:** GitHub Actions metadata and artifact download alone are
+not independent cryptographic attestations. The audit does not verify a
+signature from an independent workload monitor, HA/fencing, security
+assessment, deployment settings, protection rules, the actual staging
+hardware identity or production application SLOs. The protected
+`production-validation` environment MUST be configured by an authorized
+repository/org administrator with human reviewers and restricted secrets;
+committing a workflow does not create or protect it. The paired audit emits
+policy evidence only and cannot create a release tag or push to production.
+Close OPS4/#38 and release epic #13 **only** after separately verified
+branch protections, attestation controls, OPS2/OPS3 evidence and human
+approval. No such sign-off is implied by these files.
+
 ## 3. Network-partition safety gate
 
 `bash integration/replication_run.sh` builds a disposable MySQL primary and
