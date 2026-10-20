@@ -9,7 +9,7 @@ const Checked = if (is_safe_v17) std.heap.SafeAllocator else std.heap.DebugAlloc
     .safety = true,
 });
 
-pub fn runChecked(init: std.process.Init, tls: bool) !void {
+pub fn runChecked(io: std.Io, tls: bool) !void {
     var checked: Checked = if (comptime is_safe_v17)
         .init(std.heap.page_allocator, .{})
     else
@@ -26,10 +26,10 @@ pub fn runChecked(init: std.process.Init, tls: bool) !void {
     }
     // Run the real, fully bounded 1/8/32/64/128-worker pool, including
     // acquireWithTimeout and queryWithTimeout, verified TLS CA and host.
-    try @import("high_ccu.zig").run(checked.allocator(), init.io, tls);
+    try @import("high_ccu.zig").run(checked.allocator(), io, tls);
     std.debug.print("D3_CHECKED_WORKLOAD_COMPLETE\n", .{});
 }
 
 pub fn main(init: std.process.Init) !void {
-    try runChecked(init, true);
+    try runChecked(init.io, true);
 }
