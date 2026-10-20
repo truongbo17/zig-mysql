@@ -1,0 +1,60 @@
+name: D3 Zig checked allocator TLS isolation (diagnostic)
+
+on:
+  push:
+    branches:
+      - diagnostic/d3-zig-safe-allocator-stress
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checked-tls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        zig: ['0.16.0', '0.17.0']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ matrix.zig }}
+      - name: Start disposable MySQL 8.4 verified TLS fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name d3-checked-mysql \
+            -e MYSQL_ROOT_PASSWORD=zig_mysql_test -e MYSQL_DATABASE=zigtest \
+            -p 127.0.0.1:33307:3306 mysql:8.4.11
+          ready=0
+          for n in $(seq 1 90); do
+            if docker logs d3-checked-mysql 2>&1 | grep -q 'MySQL init process done. Ready for start up.' && \
+               docker exec -e MYSQL_PWD=zig_mysql_test d3-checked-mysql mysql -uroot -N -e 'SELECT 1' >/dev/null 2>&1; then
+              ready=1; break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker cp d3-checked-mysql:/var/lib/mysql/ca.pem /tmp/zig-mysql-test-ca.pem
+      - name: Compile fully bounded TLS stress with version-native checked allocator
+        run: zig build -Doptimize=ReleaseSafe
+      - name: Run 12 independent 128-worker TLS CCU matrices with strict corruption detection
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MALLOC_CHECK_=3
+          export GLIBC_TUNABLES=glibc.malloc.check=3
+          for n in $(seq 1 12); do
+            echo "D3_CHECKED_TLS_START zig=${{ matrix.zig }} repeat=$n"
+            timeout 180s python3 bench/profile_runner.py ./zig-out/bin/zig-mysql-high-ccu-tls-checked
+            echo "D3_CHECKED_TLS_PASS zig=${{ matrix.zig }} repeat=$n"
+          done
+      - name: Cleanup MySQL and test CA
+        if: always()
+        shell: bash
+        run: |
+          docker rm -f d3-checked-mysql || true
+          rm -f /tmp/zig-mysql-test-ca.pem
