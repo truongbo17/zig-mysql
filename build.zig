@@ -176,6 +176,18 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(checked_owned_exe);
 
+    const checked_minimal_module = b.createModule(.{
+        .root_source_file = b.path("bench/high_ccu_tls_minimal_checked.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    checked_minimal_module.addImport("zig_mysql", module);
+    const checked_minimal_exe = b.addExecutable(.{
+        .name = "zig-mysql-high-ccu-tls-minimal-checked",
+        .root_module = checked_minimal_module,
+    });
+    b.installArtifact(checked_minimal_exe);
+
 
     const soak_module = b.createModule(.{
         .root_source_file = b.path("integration/soak_local.zig"),
