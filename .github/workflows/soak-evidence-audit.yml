@@ -1,0 +1,75 @@
+name: Audit two 24h soak artifacts (NOT go-live approval)
+
+on:
+  workflow_dispatch:
+    inputs:
+      approved_sha:
+        description: Exact reviewed main commit, 40 lowercase hex chars
+        required: true
+        type: string
+      zig16_soak_run:
+        description: Successful Staging 24h Soak workflow run ID for Zig 0.16.0
+        required: true
+        type: string
+      zig17_soak_run:
+        description: Successful Staging 24h Soak workflow run ID for Zig 0.17.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: zig-mysql-24h-artifact-audit
+  cancel-in-progress: false
+
+jobs:
+  verify-official-soaks:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production-validation
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOAK_ENVIRONMENT_CLASS: ${{ vars.SOAK_ENVIRONMENT_CLASS }}
+      APPROVED_SHA: ${{ inputs.approved_sha }}
+      SOAK16: ${{ inputs.zig16_soak_run }}
+      SOAK17: ${{ inputs.zig17_soak_run }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Verify environment, explicit review SHA and distinct Actions runs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOAK_ENVIRONMENT_CLASS" == isolated-staging ]]
+          [[ "$APPROVED_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$APPROVED_SHA" == "$GITHUB_SHA" ]]
+          [[ "$SOAK16" =~ ^[0-9]+$ ]]
+          [[ "$SOAK17" =~ ^[0-9]+$ ]]
+          [[ "$SOAK16" != "$SOAK17" ]]
+          python3 -m unittest integration/test_release_gate.py integration/test_soak_provenance.py
+      - name: Download BOTH official Zig 0.16 and 0.17 24h artifacts, verify metadata and release policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          trap 'rm -rf "$tmp"' EXIT
+          audit_one() {
+            local zig="$1" run_id="$2"
+            local name="zig-mysql-soak-${zig}-${APPROVED_SHA}"
+            local dir="$tmp/$zig"
+            mkdir -p "$dir/out"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" > "$dir/run.json"
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100" > "$dir/list.json"
+            jq -e --arg name "$name"               '[.artifacts[] | select(.name == $name)] | if length == 1 then .[0] else empty end'               "$dir/list.json" > "$dir/artifact.json"
+            gh run download "$run_id" --repo "$GITHUB_REPOSITORY" --name "$name" --dir "$dir/out"
+            test -s "$dir/out/zig-mysql-soak.json"
+            python3 integration/soak_provenance.py               --run "$dir/run.json" --artifact "$dir/artifact.json"               --report "$dir/out/zig-mysql-soak.json"               --policy docs/production-soak-policy.json               --expected-sha "$APPROVED_SHA" --zig "$zig"
+          }
+          audit_one "0.16.0" "$SOAK16"
+          audit_one "0.17.0" "$SOAK17"
+          echo "SOAK ARTIFACT POLICY PASS for both Zig versions at $APPROVED_SHA"
+          echo "NOT GO-LIVE: independent HA/security, protected-branch checks and human approval required"
