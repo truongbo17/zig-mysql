@@ -35,12 +35,18 @@ extern "ssl" fn SSL_read(*SSL, [*]u8, c_int) c_int;
 extern "ssl" fn SSL_write(*SSL, [*]const u8, c_int) c_int;
 extern "ssl" fn SSL_shutdown(*SSL) c_int;
 extern "crypto" fn ERR_clear_error() void;
+extern "crypto" fn OPENSSL_thread_stop() void;
 
 pub const Session = struct {
     ctx: *SSL_CTX,
     ssl: *SSL,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, fd: c_int, host: []const u8, ca_file: ?[]const u8) !Session {
+        // Diagnostic experiment: free this worker's OpenSSL thread state
+        // before Zig marks its async task complete; prevent pthread TSD
+        // destructors racing OpenSSL process-global atexit cleanup.
+        // IMPORTANT: may affect other OpenSSL callers on the same worker.
+        defer OPENSSL_thread_stop();
         if (host.len == 0 or std.mem.indexOfScalar(u8, host, 0) != null) return error.InvalidTlsHost;
         const host_z = try allocator.dupeSentinel(u8, host, 0);
         defer allocator.free(host_z);
@@ -90,12 +96,22 @@ pub const Session = struct {
     }
 
     pub fn deinit(self: *Session) void {
+        // Diagnostic experiment: free this worker's OpenSSL thread state
+        // before Zig marks its async task complete; prevent pthread TSD
+        // destructors racing OpenSSL process-global atexit cleanup.
+        // IMPORTANT: may affect other OpenSSL callers on the same worker.
+        defer OPENSSL_thread_stop();
         _ = SSL_shutdown(self.ssl);
         SSL_free(self.ssl);
         SSL_CTX_free(self.ctx);
     }
 
     pub fn readExact(self: *Session, io: std.Io, destination: []u8) !void {
+        // Diagnostic experiment: free this worker's OpenSSL thread state
+        // before Zig marks its async task complete; prevent pthread TSD
+        // destructors racing OpenSSL process-global atexit cleanup.
+        // IMPORTANT: may affect other OpenSSL callers on the same worker.
+        defer OPENSSL_thread_stop();
         var used: usize = 0;
         while (used < destination.len) {
             const count: c_int = @intCast(@min(destination.len - used, std.math.maxInt(c_int)));
@@ -116,6 +132,11 @@ pub const Session = struct {
     }
 
     pub fn writeAll(self: *Session, io: std.Io, bytes: []const u8) !void {
+        // Diagnostic experiment: free this worker's OpenSSL thread state
+        // before Zig marks its async task complete; prevent pthread TSD
+        // destructors racing OpenSSL process-global atexit cleanup.
+        // IMPORTANT: may affect other OpenSSL callers on the same worker.
+        defer OPENSSL_thread_stop();
         var used: usize = 0;
         while (used < bytes.len) {
             const count: c_int = @intCast(@min(bytes.len - used, std.math.maxInt(c_int)));
