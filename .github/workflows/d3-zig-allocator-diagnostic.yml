@@ -98,3 +98,51 @@ jobs:
         run: |
           docker rm -f d3-checked-mysql d3-checked-plain || true
           rm -f /tmp/zig-mysql-test-ca.pem
+
+
+  owned-runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        zig: ['0.16.0', '0.17.0']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ matrix.zig }}
+      - name: Start isolated MySQL 8.4 TLS for owned-Io teardown classification
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name d3-owned-mysql \
+            -e MYSQL_ROOT_PASSWORD=zig_mysql_test -e MYSQL_DATABASE=zigtest \
+            -p 127.0.0.1:33307:3306 mysql:8.4.11
+          ready=0
+          for n in $(seq 1 90); do
+            if docker logs d3-owned-mysql 2>&1 | grep -q 'MySQL init process done. Ready for start up.' && \
+               docker exec -e MYSQL_PWD=zig_mysql_test d3-owned-mysql mysql -uroot -N -e 'SELECT 1' >/dev/null 2>&1; then
+              ready=1; break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker cp d3-owned-mysql:/var/lib/mysql/ca.pem /tmp/zig-mysql-test-ca.pem
+      - name: Build explicit std.Io.Threaded lifecycle control
+        run: zig build -Doptimize=ReleaseSafe
+      - name: Reproduce native teardown fault with explicit IO lifecycle markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MALLOC_CHECK_=3
+          for n in $(seq 1 35); do
+            echo "D3_OWNED_TLS_START zig=${{ matrix.zig }} repeat=$n"
+            timeout 180s python3 bench/profile_runner.py ./zig-out/bin/zig-mysql-high-ccu-tls-owned-checked
+            echo "D3_OWNED_TLS_PASS zig=${{ matrix.zig }} repeat=$n"
+          done
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f d3-owned-mysql || true
+          rm -f /tmp/zig-mysql-test-ca.pem
