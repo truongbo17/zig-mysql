@@ -138,6 +138,21 @@ pub fn build(b: *std.Build) void {
     const ccu_tls_step = b.step("high-ccu-tls-bench", "Run 1/8/32/64/128-CCU verified TLS matrix");
     ccu_tls_step.dependOn(&run_ccu_tls.step);
 
+    // Diagnostic only: trace native vs Zig allocator lifetime corruption on
+    // the same fully bounded TLS stress workload; not a production benchmark.
+    const checked_tls_module = b.createModule(.{
+        .root_source_file = b.path("bench/high_ccu_tls_checked.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    checked_tls_module.addImport("zig_mysql", module);
+    const checked_tls_exe = b.addExecutable(.{
+        .name = "zig-mysql-high-ccu-tls-checked",
+        .root_module = checked_tls_module,
+    });
+    b.installArtifact(checked_tls_exe);
+
+
     const soak_module = b.createModule(.{
         .root_source_file = b.path("integration/soak_local.zig"),
         .target = target,
