@@ -129,3 +129,61 @@ test "E1 utf8mb4 Unicode collation, SQL modes and prepared Vietnamese roundtrip"
     defer conn.deinit(io);
     try e1.verify(&conn, io);
 }
+
+
+test "D3 OpenSSL coexistence: external EVP digest stays valid across TLS database query" {
+    const EVP_MD_CTX = opaque {};
+    const EVP_MD = opaque {};
+    const Engine = opaque {};
+    const Native = struct {
+        extern "crypto" fn EVP_MD_CTX_new() ?*EVP_MD_CTX;
+        extern "crypto" fn EVP_MD_CTX_free(*EVP_MD_CTX) void;
+        extern "crypto" fn EVP_sha256() ?*const EVP_MD;
+        extern "crypto" fn EVP_DigestInit_ex(*EVP_MD_CTX, ?*const EVP_MD, ?*Engine) c_int;
+        extern "crypto" fn EVP_DigestUpdate(*EVP_MD_CTX, [*]const u8, usize) c_int;
+        extern "crypto" fn EVP_DigestFinal_ex(*EVP_MD_CTX, [*]u8, *c_uint) c_int;
+    };
+    var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var conn = try mysql.Client.connect(std.testing.allocator, io, .{
+        .address = .{ .ip = try std.Io.net.IpAddress.parseLiteral("127.0.0.1:33307") },
+        .username = "root",
+        .password = "zig_mysql_test",
+        .database = "zigtest",
+        .tls = .{
+            .host = "MySQL_Server_8.4.11_Auto_Generated_Server_Certificate",
+            .ca_file = "/tmp/zig-mysql-test-ca.pem",
+        },
+    });
+    defer conn.deinit(io);
+    const digest = Native.EVP_MD_CTX_new() orelse return error.OpenSslDigestFailed;
+    defer Native.EVP_MD_CTX_free(digest);
+    if (Native.EVP_DigestInit_ex(digest, Native.EVP_sha256(), null) != 1)
+        return error.OpenSslDigestFailed;
+    const a = "a";
+    const bc = "bc";
+    if (Native.EVP_DigestUpdate(digest, a.ptr, a.len) != 1)
+        return error.OpenSslDigestFailed;
+    for (0..12) |_| {
+        try conn.pingWithTimeout(io, .fromSeconds(2));
+        var result = try conn.queryWithTimeout(io, "SELECT 'tls'", .fromSeconds(2));
+        try std.testing.expectEqualStrings("tls", result.value.rows.items[0].values[0].?);
+        result.deinit();
+    }
+    if (Native.EVP_DigestUpdate(digest, bc.ptr, bc.len) != 1)
+        return error.OpenSslDigestFailed;
+    var out: [32]u8 = undefined;
+    var size: c_uint = 0;
+    if (Native.EVP_DigestFinal_ex(digest, &out, &size) != 1)
+        return error.OpenSslDigestFailed;
+    try std.testing.expectEqual(@as(c_uint, 32), size);
+    const sha256_abc = [_]u8{
+        0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
+        0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+        0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
+        0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
+    };
+    try std.testing.expectEqualSlices(u8, &sha256_abc, &out);
+}
