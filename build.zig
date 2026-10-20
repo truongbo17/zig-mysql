@@ -152,6 +152,18 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(checked_tls_exe);
 
+    const checked_plain_module = b.createModule(.{
+        .root_source_file = b.path("bench/high_ccu_plain_checked.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    checked_plain_module.addImport("zig_mysql", module);
+    const checked_plain_exe = b.addExecutable(.{
+        .name = "zig-mysql-high-ccu-plain-checked",
+        .root_module = checked_plain_module,
+    });
+    b.installArtifact(checked_plain_exe);
+
 
     const soak_module = b.createModule(.{
         .root_source_file = b.path("integration/soak_local.zig"),
