@@ -50,7 +50,7 @@ jobs:
           [[ "$SOAK16" =~ ^[0-9]+$ ]]
           [[ "$SOAK17" =~ ^[0-9]+$ ]]
           [[ "$SOAK16" != "$SOAK17" ]]
-          python3 -m unittest integration/test_release_gate.py integration/test_soak_provenance.py
+          python3 -m unittest discover -s integration -p 'test_*.py'
       - name: Download BOTH official Zig 0.16 and 0.17 24h artifacts, verify metadata and release policy
         shell: bash
         run: |
