@@ -1,14 +1,43 @@
 const std = @import("std");
 
 // TLS backend uses OpenSSL's public C ABI and cancellable nonblocking sockets.
-// A 1ms Io sleep on SSL_ERROR_WANT_READ/WRITE prevents busy-spin and makes
-// the handshake/read/write safely interruptible by std.Io.Select. This is
-// currently a portability/latency tradeoff rather than event-loop-native poll.
+// Retry SSL_ERROR_WANT_READ/WRITE on POSIX poll(2) readiness with a bounded
+// cancellation checkpoint; not a native Zig std.Io event-loop registration.
 // The MySQL server commonly sends an
 // optional CertificateRequest, which Zig 0.16/0.17's std.crypto.tls.Client
 // currently does not handle. No MySQL C client library is used.
 // https://docs.openssl.org/3.0/man3/SSL_set1_host/
 // https://docs.openssl.org/3.2/man3/SSL_CTX_load_verify_locations/
+const builtin = @import("builtin");
+const PollFd = extern struct { fd: c_int, events: c_short, revents: c_short };
+const Nfds = if (builtin.target.os.tag == .macos) c_uint else c_ulong;
+extern "c" fn poll([*]PollFd, Nfds, c_int) c_int;
+extern "c" fn __errno_location() *c_int;
+extern "c" fn __error() *c_int;
+const poll_in: c_short = 0x0001;
+const poll_out: c_short = 0x0004;
+const poll_error: c_short = 0x0008;
+const poll_invalid: c_short = 0x0020;
+
+// Zig 0.16/0.17 has no public socket readiness operation. Poll <=10ms
+// before re-entering a cancellable Io checkpoint, never poll indefinitely.
+fn waitReady(io: std.Io, fd: c_int, want: c_short) !void {
+    while (true) {
+        try io.checkCancel();
+        var event: [1]PollFd = .{.{ .fd = fd, .events = want, .revents = 0 }};
+        const n = poll(&event, 1, 10);
+        if (n > 0) {
+            if (event[0].revents & (poll_error | poll_invalid) != 0) return error.TlsSocketFailed;
+            if (event[0].revents & want != 0) return;
+            if (event[0].revents != 0) return error.TlsSocketFailed;
+        } else if (n < 0) {
+            const err_no = if (builtin.target.os.tag == .macos) __error().* else __errno_location().*;
+            if (err_no == 4) continue; // EINTR
+            return error.TlsPollFailed;
+        }
+    }
+}
+
 const SSL_METHOD = opaque {};
 const SSL_CTX = opaque {};
 const SSL = opaque {};
@@ -39,6 +68,7 @@ extern "crypto" fn ERR_clear_error() void;
 pub const Session = struct {
     ctx: *SSL_CTX,
     ssl: *SSL,
+    fd: c_int,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io, fd: c_int, host: []const u8, ca_file: ?[]const u8) !Session {
         if (host.len == 0 or std.mem.indexOfScalar(u8, host, 0) != null) return error.InvalidTlsHost;
@@ -79,14 +109,15 @@ pub const Session = struct {
             const n = SSL_connect(ssl);
             if (n == 1) break;
             switch (SSL_get_error(ssl, n)) {
-                2, 3 => try std.Io.sleep(io, .fromMilliseconds(1), .awake), // WANT_READ/WRITE
+                2 => try waitReady(io, fd, poll_in),
+                3 => try waitReady(io, fd, poll_out),
                 else => return error.TlsHandshakeFailed,
             }
         }
         const certificate = SSL_get1_peer_certificate(ssl) orelse return error.TlsCertificateMissing;
         X509_free(certificate);
         if (SSL_get_verify_result(ssl) != 0) return error.TlsCertificateInvalid;
-        return .{ .ctx = ctx, .ssl = ssl };
+        return .{ .ctx = ctx, .ssl = ssl, .fd = fd };
     }
 
     pub fn deinit(self: *Session) void {
@@ -103,10 +134,8 @@ pub const Session = struct {
             const n = SSL_read(self.ssl, destination[used..].ptr, count);
             if (n <= 0) {
                 switch (SSL_get_error(self.ssl, n)) {
-                    2, 3 => {
-                        try std.Io.sleep(io, .fromMilliseconds(1), .awake);
-                        continue;
-                    },
+                    2 => { try waitReady(io, self.fd, poll_in); continue; },
+                    3 => { try waitReady(io, self.fd, poll_out); continue; },
                     6 => return error.EndOfStream, // SSL_ERROR_ZERO_RETURN
                     else => return error.TlsReadFailed,
                 }
@@ -123,10 +152,8 @@ pub const Session = struct {
             const n = SSL_write(self.ssl, bytes[used..].ptr, count);
             if (n <= 0) {
                 switch (SSL_get_error(self.ssl, n)) {
-                    2, 3 => {
-                        try std.Io.sleep(io, .fromMilliseconds(1), .awake);
-                        continue;
-                    },
+                    2 => { try waitReady(io, self.fd, poll_in); continue; },
+                    3 => { try waitReady(io, self.fd, poll_out); continue; },
                     else => return error.TlsWriteFailed,
                 }
             }
