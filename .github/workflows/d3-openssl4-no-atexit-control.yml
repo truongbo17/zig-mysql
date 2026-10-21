@@ -36,7 +36,7 @@ jobs:
           make -j2 >/tmp/zig-mysql-openssl4-build.log 2>&1 || { tail -n 100 /tmp/zig-mysql-openssl4-build.log; exit 1; }
           make install_sw >/tmp/zig-mysql-openssl4-install.log 2>&1 || { tail -n 100 /tmp/zig-mysql-openssl4-install.log; exit 1; }
           test -s /tmp/zig-mysql-ossl40/lib/libssl.so.4
-          /tmp/zig-mysql-ossl40/bin/openssl version -v
+          LD_LIBRARY_PATH=/tmp/zig-mysql-ossl40/lib /tmp/zig-mysql-ossl40/bin/openssl version -v
       - name: Disposable verified-TLS MySQL 8.4 server
         shell: bash
         run: |
