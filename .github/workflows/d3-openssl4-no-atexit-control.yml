@@ -1,0 +1,81 @@
+name: D3 ABI/control — pinned OpenSSL 4.0.3 no automatic atexit
+on:
+  push:
+    branches:
+      - diagnostic/d3-openssl4-no-atexit
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  openssl4-no-atexit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        zig: ['0.16.0', '0.17.0']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ matrix.zig }}
+      - name: Verify and build immutable OpenSSL 4.0.3 under private prefix
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/zig-mysql-ossl40
+          cd /tmp
+          curl --fail --location --retry 4 --silent --show-error \
+            https://github.com/openssl/openssl/releases/download/openssl-4.0.3/openssl-4.0.3.tar.gz \
+            -o openssl-4.0.3.tar.gz
+          echo '325b5c806167c13b40b1ffeadfe0248197c00eccc4cf123ec1e28d2d2fd216d9  openssl-4.0.3.tar.gz' | sha256sum -c -
+          tar -xf openssl-4.0.3.tar.gz
+          cd openssl-4.0.3
+          ./Configure linux-x86_64 shared no-tests no-docs \
+            --prefix=/tmp/zig-mysql-ossl40 --libdir=lib
+          make -j2 >/tmp/zig-mysql-openssl4-build.log 2>&1 || { tail -n 100 /tmp/zig-mysql-openssl4-build.log; exit 1; }
+          make install_sw >/tmp/zig-mysql-openssl4-install.log 2>&1 || { tail -n 100 /tmp/zig-mysql-openssl4-install.log; exit 1; }
+          test -s /tmp/zig-mysql-ossl40/lib/libssl.so.4
+          /tmp/zig-mysql-ossl40/bin/openssl version -v
+      - name: Disposable verified-TLS MySQL 8.4 server
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run -d --name d3-openssl4-mysql \
+            -e MYSQL_ROOT_PASSWORD=zig_mysql_test -e MYSQL_DATABASE=zigtest \
+            -p 127.0.0.1:33307:3306 mysql:8.4.11
+          ready=0
+          for n in $(seq 1 90); do
+            if docker logs d3-openssl4-mysql 2>&1 | grep -q 'MySQL init process done. Ready for start up.' && \
+               docker exec -e MYSQL_PWD=zig_mysql_test d3-openssl4-mysql mysql -uroot -N -e 'SELECT 1' >/dev/null 2>&1; then
+              ready=1; break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+          docker cp d3-openssl4-mysql:/var/lib/mysql/ca.pem /tmp/zig-mysql-test-ca.pem
+      - name: Compile unchanged OpenSSL driver against privately pinned OpenSSL 4
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH=/tmp/zig-mysql-ossl40/lib
+          zig build -Doptimize=ReleaseFast -Dopenssl_prefix=/tmp/zig-mysql-ossl40
+          ldd zig-out/bin/zig-mysql-high-ccu-tls-bench | tee /tmp/zig-mysql-openssl4-ldd.txt
+          grep -E '/tmp/zig-mysql-ossl40/lib/libssl.so.4' /tmp/zig-mysql-openssl4-ldd.txt
+          grep -E '/tmp/zig-mysql-ossl40/lib/libcrypto.so.4' /tmp/zig-mysql-openssl4-ldd.txt
+      - name: Require 20 independent full-timeout verified TLS 128CCU process exits
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LD_LIBRARY_PATH=/tmp/zig-mysql-ossl40/lib
+          export MALLOC_CHECK_=3
+          for n in $(seq 1 20); do
+            echo "D3_OPENSSL4_START zig=${{ matrix.zig }} repeat=$n"
+            timeout 180s python3 bench/profile_runner.py ./zig-out/bin/zig-mysql-high-ccu-tls-bench
+            echo "D3_OPENSSL4_PASS zig=${{ matrix.zig }} repeat=$n"
+          done
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f d3-openssl4-mysql || true
+          rm -f /tmp/zig-mysql-test-ca.pem
