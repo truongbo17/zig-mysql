@@ -11,8 +11,11 @@ pub fn build(b: *std.Build) void {
     module.link_libc = true;
     module.linkSystemLibrary("ssl", .{});
     module.linkSystemLibrary("crypto", .{});
-    if (target.result.os.tag == .macos) {
-        const prefix = b.option([]const u8, "openssl_prefix", "OpenSSL installation prefix") orelse "/opt/homebrew/opt/openssl@3";
+    // Optional isolated OpenSSL prefix (Linux/macOS). Never alter the host
+    // default library selection unless the caller opts in explicitly.
+    const openssl_prefix = b.option([]const u8, "openssl_prefix", "Explicit OpenSSL installation prefix");
+    if (openssl_prefix != null or target.result.os.tag == .macos) {
+        const prefix = openssl_prefix orelse "/opt/homebrew/opt/openssl@3";
         const lib_path = b.fmt("{s}/lib", .{prefix});
         module.addLibraryPath(.{ .cwd_relative = lib_path });
         module.addRPath(.{ .cwd_relative = lib_path });
@@ -133,6 +136,8 @@ pub fn build(b: *std.Build) void {
         .name = "zig-mysql-high-ccu-tls-bench",
         .root_module = ccu_tls_module,
     });
+    // Repeat exact same optimized binary across independent OS processes for D3/D4 regression.
+    b.installArtifact(ccu_tls_exe);
     const run_ccu_tls = b.addRunArtifact(ccu_tls_exe);
     run_ccu_tls.has_side_effects = true;
     const ccu_tls_step = b.step("high-ccu-tls-bench", "Run 1/8/32/64/128-CCU verified TLS matrix");
