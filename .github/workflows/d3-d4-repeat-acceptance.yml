@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: d3-d4-repeat-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   tls-concurrency:
     runs-on: ubuntu-latest
