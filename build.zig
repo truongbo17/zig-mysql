@@ -11,8 +11,11 @@ pub fn build(b: *std.Build) void {
     module.link_libc = true;
     module.linkSystemLibrary("ssl", .{});
     module.linkSystemLibrary("crypto", .{});
-    if (target.result.os.tag == .macos) {
-        const prefix = b.option([]const u8, "openssl_prefix", "OpenSSL installation prefix") orelse "/opt/homebrew/opt/openssl@3";
+    // Optional isolated OpenSSL prefix (Linux/macOS). Never alter the host
+    // default library selection unless the caller opts in explicitly.
+    const openssl_prefix = b.option([]const u8, "openssl_prefix", "Explicit OpenSSL installation prefix");
+    if (openssl_prefix != null or target.result.os.tag == .macos) {
+        const prefix = openssl_prefix orelse "/opt/homebrew/opt/openssl@3";
         const lib_path = b.fmt("{s}/lib", .{prefix});
         module.addLibraryPath(.{ .cwd_relative = lib_path });
         module.addRPath(.{ .cwd_relative = lib_path });
