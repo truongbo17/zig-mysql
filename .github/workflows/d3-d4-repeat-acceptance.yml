@@ -143,7 +143,7 @@ jobs:
           test -f "$root/install/lib/libssl.so.4"
           test -f "$root/install/lib/libcrypto.so.4"
           echo "ISOLATED_OPENSSL4_PREFIX=$root/install" >> "$GITHUB_ENV"
-          "$root/install/bin/openssl" version
+          LD_LIBRARY_PATH="$root/install/lib" "$root/install/bin/openssl" version
       - name: Disposable MySQL 8.4 server with independent TLS implementation
         shell: bash
         run: |
