@@ -3,6 +3,7 @@ name: D3-D4 strict repeated TLS acceptance (NOT production release)
 on:
   push:
     branches:
+      - main
       - test/d3-d4-mainline-repeat-acceptance
   workflow_dispatch:
 
