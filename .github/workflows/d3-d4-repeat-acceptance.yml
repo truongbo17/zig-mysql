@@ -63,3 +63,45 @@ jobs:
         run: |
           docker rm -f d4-acceptance-mysql || true
           rm -f /tmp/zig-mysql-test-ca.pem
+
+
+  macos-readiness:
+    runs-on: macos-15
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        zig: ['0.16.0', '0.17.0']
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ matrix.zig }}
+      - name: Verify native OpenSSL 3 location
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew list openssl@3 >/dev/null 2>&1 || brew install openssl@3
+          test -f "$(brew --prefix openssl@3)/lib/libssl.dylib"
+          echo "OPENSSL_PREFIX=$(brew --prefix openssl@3)" >> "$GITHUB_ENV"
+      - name: Zig core tests against native macOS POSIX poll and OpenSSL
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build -Dopenssl_prefix="$OPENSSL_PREFIX" test
+      - name: Cancel silent greeting and stalled TLS ServerHello on macOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -u integration/stall_server.py > "$RUNNER_TEMP/d3-macos-stalls.log" 2>&1 &
+          stall_pid=$!
+          trap 'kill "$stall_pid" 2>/dev/null || true' EXIT
+          sleep 0.5
+          kill -0 "$stall_pid"
+          timeout_cmd=""
+          if command -v gtimeout >/dev/null 2>&1; then timeout_cmd=gtimeout; fi
+          if [[ -n "$timeout_cmd" ]]; then
+            "$timeout_cmd" 40s zig build -Dopenssl_prefix="$OPENSSL_PREFIX" timeout-integration
+          else
+            zig build -Dopenssl_prefix="$OPENSSL_PREFIX" timeout-integration
+          fi
